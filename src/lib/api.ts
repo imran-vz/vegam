@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export interface TransferInfo {
 	id: string;
@@ -6,6 +7,8 @@ export interface TransferInfo {
 	file_size: number;
 	bytes_transferred: number;
 	status: "pending" | "inprogress" | "completed" | "failed" | "cancelled";
+	error: string | null;
+	direction: "send" | "receive";
 }
 
 export interface PeerInfo {
@@ -54,4 +57,20 @@ export async function listPeers(): Promise<PeerInfo[]> {
 
 export async function getDeviceName(): Promise<string> {
 	return await invoke<string>("get_device_name");
+}
+
+export async function listenToTransferUpdates(
+	callback: (transfer: TransferInfo) => void,
+): Promise<UnlistenFn> {
+	return await listen<TransferInfo>("transfer-update", (event) => {
+		callback(event.payload);
+	});
+}
+
+export async function listenToTransferProgress(
+	callback: (transfer: TransferInfo) => void,
+): Promise<UnlistenFn> {
+	return await listen<TransferInfo>("transfer-progress", (event) => {
+		callback(event.payload);
+	});
 }

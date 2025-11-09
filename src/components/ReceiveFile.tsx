@@ -1,7 +1,8 @@
+import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
-import { debug, error as logError } from "@tauri-apps/plugin-log";
-import { Download } from "lucide-react";
-import { useState } from "react";
+import { debug } from "@tauri-apps/plugin-log";
+import { Download, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -21,7 +22,14 @@ import {
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { receiveFile, type TransferInfo } from "@/lib/api";
-import { formatFileSize } from "@/lib/utils";
+import { formatFileSize, parseError } from "@/lib/utils";
+
+const STEPS = {
+	receive: "Receive",
+	receiving: "Receiving",
+	completed: "Completed",
+	failed: "Failed",
+} as const;
 
 export function ReceiveFile() {
 	const [ticket, setTicket] = useState("");
@@ -35,6 +43,30 @@ export function ReceiveFile() {
 	const [activeTransfer, setActiveTransfer] = useState<TransferInfo | null>(
 		null,
 	);
+	const [step, setStep] = useState<keyof typeof STEPS>("receive");
+
+	// Listen for transfer progress updates
+	useEffect(() => {
+		const unlisten = listen<TransferInfo>("transfer-progress", (event) => {
+			const progress = event.payload;
+			if (activeTransfer && progress.id === activeTransfer.id) {
+				setActiveTransfer((prev) =>
+					prev
+						? {
+								...prev,
+								bytes_transferred: progress.bytes_transferred,
+								file_size: progress.file_size || prev.file_size,
+								status: progress.status,
+							}
+						: null,
+				);
+			}
+		});
+
+		return () => {
+			unlisten.then((fn) => fn());
+		};
+	}, [activeTransfer]);
 
 	const handlePaste = async () => {
 		try {
@@ -43,20 +75,21 @@ export function ReceiveFile() {
 				setTicket(text.trim());
 			}
 		} catch (err) {
-			setError("Failed to read clipboard");
-			console.error(err);
+			setError(parseError(err));
 		}
 	};
 
 	const handleReceive = async () => {
 		if (!ticket.trim()) {
 			setError("Please enter a transfer ticket");
+			setStep("receive");
 			return;
 		}
 
 		try {
 			setIsLoading(true);
 			setError(null);
+			setStep("receiving");
 
 			// Open save dialog
 			const selectedPath = await save({
@@ -64,27 +97,23 @@ export function ReceiveFile() {
 			});
 
 			if (!selectedPath) {
+				setStep("receive");
 				return;
 			}
 
 			debug(`selectedPath: ${selectedPath}`);
-
 			const outputPath = selectedPath;
 
 			// Show approval dialog
 			setPendingTransfer({ ticket, outputPath });
 			setShowApprovalDialog(true);
+			setStep("completed");
+
+			setTimeout(() => {
+				setStep("receive");
+			}, 1500);
 		} catch (err) {
-			if (err instanceof Error) {
-				logError(err.message);
-				setError(err.message);
-			} else if (typeof err === "string") {
-				logError(err);
-				setError(err);
-			} else {
-				logError("Failed to start transfer");
-				setError("Failed to start transfer");
-			}
+			setError(parseError(err));
 		} finally {
 			setIsLoading(false);
 		}
@@ -96,17 +125,23 @@ export function ReceiveFile() {
 		try {
 			setShowApprovalDialog(false);
 			setIsLoading(true);
-
+			setStep("receiving");
 			const transfer = await receiveFile(
 				pendingTransfer.ticket,
 				pendingTransfer.outputPath,
 			);
 
 			setActiveTransfer(transfer);
+			setStep("completed");
 			setTicket("");
 			setPendingTransfer(null);
+
+			setTimeout(() => {
+				setStep("receive");
+			}, 1500);
 		} catch (err) {
-			setError(err instanceof Error ? err.message : "Failed to receive file");
+			setError(parseError(err));
+			setStep("failed");
 		} finally {
 			setIsLoading(false);
 		}
@@ -116,6 +151,7 @@ export function ReceiveFile() {
 		setShowApprovalDialog(false);
 		setPendingTransfer(null);
 		setIsLoading(false);
+		setStep("receive");
 	};
 
 	return (
@@ -152,8 +188,13 @@ export function ReceiveFile() {
 								disabled={isLoading || !ticket.trim()}
 								className="w-full"
 							>
-								<Download className="mr-2 h-4 w-4" />
-								{isLoading ? "Processing..." : "Receive File"}
+								{isLoading ? (
+									<Loader2 className="mr-2 h-4 w-4 animate-spin" />
+								) : (
+									<Download className="mr-2 h-4 w-4" />
+								)}
+
+								{STEPS[step]}
 							</Button>
 						</>
 					) : (
@@ -165,28 +206,48 @@ export function ReceiveFile() {
 								</p>
 							</div>
 
-							<div className="space-y-2">
-								<div className="flex justify-between text-sm">
-									<span>Downloading...</span>
-									<span>
-										{Math.round(
-											(activeTransfer.bytes_transferred /
-												activeTransfer.file_size) *
-												100,
-										)}
-										%
-									</span>
+							{activeTransfer.status === "failed" && activeTransfer.error ? (
+								<div className="p-3 text-sm text-destructive bg-destructive/10 rounded-lg">
+									<p className="font-medium">Transfer Failed</p>
+									<p className="text-xs mt-1">{activeTransfer.error}</p>
 								</div>
-								<Progress
-									value={
-										(activeTransfer.bytes_transferred /
-											activeTransfer.file_size) *
-										100
-									}
-								/>
-							</div>
+							) : activeTransfer.status === "completed" ? (
+								<div className="p-3 text-sm text-green-700 bg-green-100 rounded-lg">
+									<p className="font-medium">Transfer Completed</p>
+								</div>
+							) : (
+								<div className="space-y-2">
+									<div className="flex justify-between text-sm">
+										<span>
+											{activeTransfer.status === "inprogress"
+												? "Downloading..."
+												: "Preparing..."}
+										</span>
+										<span>
+											{activeTransfer.file_size > 0
+												? Math.round(
+														(activeTransfer.bytes_transferred /
+															activeTransfer.file_size) *
+															100,
+													)
+												: 0}
+											%
+										</span>
+									</div>
+									<Progress
+										value={
+											activeTransfer.file_size > 0
+												? (activeTransfer.bytes_transferred /
+														activeTransfer.file_size) *
+													100
+												: 0
+										}
+									/>
+								</div>
+							)}
 
-							{activeTransfer.status === "completed" && (
+							{(activeTransfer.status === "completed" ||
+								activeTransfer.status === "failed") && (
 								<Button
 									variant="outline"
 									onClick={() => setActiveTransfer(null)}

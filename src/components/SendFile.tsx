@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { debug, error as logError } from "@tauri-apps/plugin-log";
-import { Check, Copy } from "lucide-react";
+import { debug } from "@tauri-apps/plugin-log";
+import { Check, Copy, File, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,18 +12,27 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { type BlobTicketInfo, sendFile } from "@/lib/api";
-import { formatFileSize } from "@/lib/utils";
+import { formatFileSize, parseError } from "@/lib/utils";
+
+const STEPS = {
+	select: "Select File",
+	selecting: "Selecting File",
+	generating: "Generating Ticket",
+	failed: "Failed",
+} as const;
 
 export function SendFile() {
 	const [ticketInfo, setTicketInfo] = useState<BlobTicketInfo | null>(null);
 	const [isLoading, setIsLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [copied, setCopied] = useState(false);
+	const [step, setStep] = useState<keyof typeof STEPS>("select");
 
 	const handleSelectFile = async () => {
 		try {
 			setIsLoading(true);
 			setError(null);
+			setStep("selecting");
 
 			const selected = await open({
 				multiple: false,
@@ -31,23 +40,18 @@ export function SendFile() {
 			});
 
 			if (!selected) {
+				setStep("select");
 				return;
 			}
 
 			debug(`selected file: ${selected}`);
+			setStep("generating");
 			const ticket = await sendFile(selected);
+			setStep("select");
 			setTicketInfo(ticket);
 		} catch (err) {
-			if (err instanceof Error) {
-				logError(err.message);
-				setError(err.message);
-			} else if (typeof err === "string") {
-				logError(err);
-				setError(err);
-			} else {
-				logError("Failed to send file");
-				setError("Failed to send file");
-			}
+			setError(parseError(err));
+			setStep("failed");
 		} finally {
 			setIsLoading(false);
 		}
@@ -76,7 +80,13 @@ export function SendFile() {
 						disabled={isLoading}
 						className="w-full"
 					>
-						{isLoading ? "Processing..." : "Select File"}
+						{isLoading ? (
+							<Loader2 className="h-4 w-4 animate-spin" />
+						) : (
+							<File className="h-4 w-4" />
+						)}
+
+						{STEPS[step]}
 					</Button>
 				) : (
 					<div className="space-y-4">

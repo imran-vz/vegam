@@ -1,3 +1,4 @@
+import { error as logError } from "@tauri-apps/plugin-log";
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -25,4 +26,16 @@ export function calculateProgress(transferred: number, total: number): number {
 export function truncateString(str: string, maxLength: number): string {
 	if (str.length <= maxLength) return str;
 	return `${str.slice(0, maxLength - 3)}...`;
+}
+
+export function parseError(error: unknown): string {
+	let message = "An unknown error occurred";
+	if (error instanceof Error) {
+		message = error.message;
+	} else if (typeof error === "string") {
+		message = error;
+	}
+
+	logError(message);
+	return message;
 }
