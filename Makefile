@@ -18,6 +18,14 @@ help:
 	@echo "Environment Variables:"
 	@echo "  ANDROID_KEY_PASSWORD   - Keystore password"
 	@echo "  KEYSTORE_FILE          - Keystore path (default: upload-keystore.jks)"
+	@echo ""
+	@echo "Development Targets:"
+	@echo "  check                - Check dependencies and build"
+	@echo "  install              - Install dependencies"
+	@echo "  build-desktop        - Build desktop app"
+	@echo "  dev                  - Run desktop app in development mode"
+	@echo "  android-dev          - Run Android app in development mode"
+	@echo ""
 
 android-setup:
 	@echo "Generating keystore..."
@@ -72,3 +80,20 @@ check-password:
 		echo "Error: ANDROID_KEY_PASSWORD not set"; \
 		exit 1; \
 	fi
+
+check-tauri:
+	cd src-tauri && cargo check
+
+install:
+	pnpm install
+
+check: install check-tauri 
+
+build-desktop:
+	pnpm tauri build
+
+dev:
+	pnpm tauri dev
+
+android-dev:
+	pnpm tauri android dev
