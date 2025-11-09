@@ -6728,6 +6728,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync_async"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b815ef8e053247ad785b136d233ee9c9872eeda5319f2719d57cac88270c3dd9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.109",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6973,6 +6984,22 @@ dependencies = [
  "tauri-utils",
  "toml 0.9.8",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-android-fs"
+version = "19.0.0"
+source = "git+https://github.com/aiueo13/tauri-plugin-android-fs?branch=main#b1b5129913d837e6c7a594f777f3b0fc29576a8f"
+dependencies = [
+ "base64 0.22.1",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "sync_async",
+ "tauri",
+ "tauri-plugin",
+ "tauri-plugin-fs",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -7884,21 +7911,27 @@ name = "vegam"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "futures-lite",
  "hostname 0.4.1",
  "iroh",
  "iroh-blobs",
+ "iroh-io",
+ "log",
  "redb 1.5.2",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tauri-plugin-android-fs",
  "tauri-plugin-dialog",
+ "tauri-plugin-fs",
  "tauri-plugin-log",
  "tauri-plugin-opener",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

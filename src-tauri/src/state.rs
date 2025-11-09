@@ -1,4 +1,5 @@
 use anyhow::Result;
+use iroh::blobs::Hash;
 use iroh::net::endpoint::Endpoint;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,9 +13,11 @@ pub struct TransferInfo {
     pub file_size: u64,
     pub bytes_transferred: u64,
     pub status: TransferStatus,
+    pub error: Option<String>,
+    pub direction: TransferDirection,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum TransferStatus {
     Pending,
@@ -22,6 +25,13 @@ pub enum TransferStatus {
     Completed,
     Failed,
     Cancelled,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransferDirection {
+    Send,
+    Receive,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,6 +43,8 @@ pub struct PeerInfo {
 
 pub struct AppState {
     pub endpoint: Arc<RwLock<Option<Endpoint>>>,
+    pub blob_store: Arc<RwLock<Option<iroh_blobs::store::mem::Store>>>,
+    pub blob_hashes: Arc<RwLock<HashMap<Hash, Vec<u8>>>>, // Track blobs we're serving
     pub transfers: Arc<RwLock<HashMap<String, TransferInfo>>>,
     pub peers: Arc<RwLock<HashMap<String, PeerInfo>>>,
 }
@@ -41,9 +53,28 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             endpoint: Arc::new(RwLock::new(None)),
+            blob_store: Arc::new(RwLock::new(None)),
+            blob_hashes: Arc::new(RwLock::new(HashMap::new())),
             transfers: Arc::new(RwLock::new(HashMap::new())),
             peers: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    pub async fn set_blob_store(&self, store: iroh_blobs::store::mem::Store) {
+        let mut s = self.blob_store.write().await;
+        *s = Some(store);
+    }
+
+    pub async fn get_blob_store(&self) -> Result<iroh_blobs::store::mem::Store> {
+        let store = self.blob_store.read().await;
+        store
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Blob store not initialized"))
+    }
+
+    pub async fn add_blob(&self, hash: Hash, data: Vec<u8>) {
+        let mut blobs = self.blob_hashes.write().await;
+        blobs.insert(hash, data);
     }
 
     pub async fn set_endpoint(&self, endpoint: Endpoint) {
@@ -62,19 +93,28 @@ impl AppState {
         transfers.insert(transfer.id.clone(), transfer);
     }
 
-    // pub async fn update_transfer_progress(&self, id: &str, bytes_transferred: u64) {
-    //     let mut transfers = self.transfers.write().await;
-    //     if let Some(transfer) = transfers.get_mut(id) {
-    //         transfer.bytes_transferred = bytes_transferred;
-    //     }
-    // }
+    pub async fn update_transfer_progress(&self, id: &str, bytes_transferred: u64) {
+        let mut transfers = self.transfers.write().await;
+        if let Some(transfer) = transfers.get_mut(id) {
+            transfer.bytes_transferred = bytes_transferred;
+            if bytes_transferred > 0 && transfer.status == TransferStatus::Pending {
+                transfer.status = TransferStatus::InProgress;
+            }
+        }
+    }
 
-    // pub async fn update_transfer_status(&self, id: &str, status: TransferStatus) {
-    //     let mut transfers = self.transfers.write().await;
-    //     if let Some(transfer) = transfers.get_mut(id) {
-    //         transfer.status = status;
-    //     }
-    // }
+    pub async fn update_transfer_status(
+        &self,
+        id: &str,
+        status: TransferStatus,
+        error: Option<String>,
+    ) {
+        let mut transfers = self.transfers.write().await;
+        if let Some(transfer) = transfers.get_mut(id) {
+            transfer.status = status;
+            transfer.error = error;
+        }
+    }
 
     pub async fn get_transfer(&self, id: &str) -> Option<TransferInfo> {
         let transfers = self.transfers.read().await;
