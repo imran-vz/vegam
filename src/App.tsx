@@ -1,51 +1,86 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { Wifi } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ReceiveFile } from "@/components/ReceiveFile";
+import { SendFile } from "@/components/SendFile";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { getDeviceName, initNode } from "@/lib/api";
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+	const [nodeId, setNodeId] = useState<string | null>(null);
+	const [deviceName, setDeviceName] = useState<string>("");
+	const [isInitializing, setIsInitializing] = useState(true);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+	useEffect(() => {
+		const initialize = async () => {
+			try {
+				const id = await initNode();
+				setNodeId(id);
 
-  return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+				const name = await getDeviceName();
+				setDeviceName(name);
+			} catch (error) {
+				console.error("Failed to initialize:", error);
+			} finally {
+				setIsInitializing(false);
+			}
+		};
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
+		initialize();
+	}, []);
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
-  );
+	if (isInitializing) {
+		return (
+			<div className="flex items-center justify-center min-h-screen">
+				<div className="text-center space-y-2">
+					<div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" />
+					<p className="text-sm text-muted-foreground">Initializing...</p>
+				</div>
+			</div>
+		);
+	}
+
+	return (
+		<div className="min-h-screen bg-background p-4">
+			<div className="max-w-2xl mx-auto space-y-6">
+				<div className="text-center space-y-2">
+					<div className="flex items-center justify-center gap-3">
+						<h1 className="text-3xl font-bold">Vegam</h1>
+					</div>
+					<p className="text-sm text-muted-foreground">P2P File Transfer</p>
+				</div>
+
+				<div className="flex items-center justify-center gap-4">
+					{deviceName && (
+						<div className="flex items-center gap-2 text-sm text-muted-foreground">
+							<Wifi className="h-4 w-4" />
+							<span>{deviceName}</span>
+						</div>
+					)}
+				</div>
+
+				<Tabs defaultValue="send" className="w-full">
+					<TabsList className="grid w-full grid-cols-2">
+						<TabsTrigger value="send">Send</TabsTrigger>
+						<TabsTrigger value="receive">Receive</TabsTrigger>
+					</TabsList>
+					<TabsContent value="send" className="mt-6">
+						<SendFile />
+					</TabsContent>
+					<TabsContent value="receive" className="mt-6">
+						<ReceiveFile />
+					</TabsContent>
+				</Tabs>
+
+				{nodeId && (
+					<div className="text-center">
+						<p className="text-xs text-muted-foreground font-mono">
+							Node: {nodeId.slice(0, 16)}...
+						</p>
+					</div>
+				)}
+			</div>
+		</div>
+	);
 }
 
 export default App;

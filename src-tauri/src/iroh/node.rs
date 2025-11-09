@@ -1,24 +1,17 @@
 use anyhow::Result;
 use iroh::net::endpoint::{Endpoint, NodeAddr};
-use iroh::net::NodeId;
-use std::net::SocketAddr;
-use tracing::{info, error};
+use tracing::info;
 
 pub async fn initialize_endpoint() -> Result<Endpoint> {
     info!("Initializing Iroh endpoint");
 
     // Create endpoint with default configuration
     // This includes public relay servers for NAT traversal
-    let endpoint = Endpoint::builder()
-        .bind()
-        .await?;
+    let endpoint = Endpoint::builder().bind().await?;
 
     let node_id = endpoint.node_id();
-    let local_addrs: Vec<SocketAddr> = endpoint
-        .bound_sockets()
-        .iter()
-        .map(|s| s.0)
-        .collect();
+    let bound = endpoint.bound_sockets();
+    let local_addrs = vec![bound.0];
 
     info!("Iroh node initialized");
     info!("Node ID: {}", node_id);
@@ -30,10 +23,8 @@ pub async fn initialize_endpoint() -> Result<Endpoint> {
 pub fn get_node_addr(endpoint: &Endpoint) -> NodeAddr {
     let node_id = endpoint.node_id();
     let relay_url = endpoint.home_relay();
-    let direct_addresses = endpoint.bound_sockets()
-        .iter()
-        .map(|s| s.0)
-        .collect();
+    let bound = endpoint.bound_sockets();
+    let direct_addresses = vec![bound.0];
 
     let mut addr = NodeAddr::new(node_id);
 
@@ -48,8 +39,8 @@ pub fn get_node_id(endpoint: &Endpoint) -> String {
     endpoint.node_id().to_string()
 }
 
-pub fn parse_node_id(node_id_str: &str) -> Result<NodeId> {
-    node_id_str
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid node ID: {}", e))
-}
+// pub fn parse_node_id(node_id_str: &str) -> Result<NodeId> {
+//     node_id_str
+//         .parse()
+//         .map_err(|e| anyhow::anyhow!("Invalid node ID: {}", e))
+// }

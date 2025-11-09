@@ -26,17 +26,22 @@
 		1B1036F103BB665C0A3DBD6A /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		2132A0057EFDFD634ECD3E2D /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		2A45633D860D01A5A1C0458B /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		2ADEE8AC735FC1FEF43E891B /* discovery.rs */ = {isa = PBXFileReference; path = discovery.rs; sourceTree = "<group>"; };
 		3783DB7636C044DB70497981 /* vegam_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = vegam_iOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4ABF2BBF550B3257C1BE5E9B /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		60826B9A19A84D7A7D1A4BFE /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
 		63786A06AADA3534E6ED2654 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		73F5DDAC81D6B61E8F337A60 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		82EFC1FF95D3A34EA6F434EB /* node.rs */ = {isa = PBXFileReference; path = node.rs; sourceTree = "<group>"; };
 		89D464D7D8A1895BD5F459A4 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		A0D7805CAA5138B5FFCE18DB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		A2C5C8E45C0904F9C275E5CB /* transfer.rs */ = {isa = PBXFileReference; path = transfer.rs; sourceTree = "<group>"; };
 		A98319EA04C25B3A75FF89F6 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		AD617BD02BAC4A7C09DDE457 /* state.rs */ = {isa = PBXFileReference; path = state.rs; sourceTree = "<group>"; };
 		C0EA37C9CC133C6ABB5EB52C /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		C4E61CB5221005684B3BEE1B /* vegam_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = vegam_iOS.entitlements; sourceTree = "<group>"; };
 		D1CE99561F95927A020DD87B /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		D375A6695C4F540C4168DFA3 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
 		D891D60EDC46EA18CD73B17C /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		F1C8350175677F4E43D85671 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		F9C1398159475CC1D88B32FE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -68,6 +73,17 @@
 				C4E61CB5221005684B3BEE1B /* vegam_iOS.entitlements */,
 			);
 			path = vegam_iOS;
+			sourceTree = "<group>";
+		};
+		19B442D40313E993B47DF79B /* iroh */ = {
+			isa = PBXGroup;
+			children = (
+				2ADEE8AC735FC1FEF43E891B /* discovery.rs */,
+				D375A6695C4F540C4168DFA3 /* mod.rs */,
+				82EFC1FF95D3A34EA6F434EB /* node.rs */,
+				A2C5C8E45C0904F9C275E5CB /* transfer.rs */,
+			);
+			path = iroh;
 			sourceTree = "<group>";
 		};
 		419B97FD3FAE5EBD0A7B9970 /* Products */ = {
@@ -130,6 +146,8 @@
 			children = (
 				60826B9A19A84D7A7D1A4BFE /* lib.rs */,
 				4ABF2BBF550B3257C1BE5E9B /* main.rs */,
+				AD617BD02BAC4A7C09DDE457 /* state.rs */,
+				19B442D40313E993B47DF79B /* iroh */,
 			);
 			name = src;
 			path = ../../src;
@@ -330,7 +348,7 @@
 				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = codes.imran.vegam;
-				PRODUCT_NAME = vegam;
+				PRODUCT_NAME = Vegam;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
@@ -424,7 +442,7 @@
 				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = codes.imran.vegam;
-				PRODUCT_NAME = vegam;
+				PRODUCT_NAME = Vegam;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;

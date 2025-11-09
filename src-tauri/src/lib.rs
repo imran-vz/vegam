@@ -1,20 +1,11 @@
-mod state;
 mod iroh;
+mod state;
 
+use iroh::transfer::BlobTicketInfo;
 use state::{AppState, PeerInfo, TransferInfo};
 use std::path::PathBuf;
 use tauri::State;
 use tracing::info;
-
-// Initialize logging
-fn init_logging() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-}
 
 #[tauri::command]
 async fn init_node(state: State<'_, AppState>) -> Result<String, String> {
@@ -44,7 +35,7 @@ async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
 async fn send_file(
     state: State<'_, AppState>,
     file_path: String,
-) -> Result<iroh::BlobTicketInfo, String> {
+) -> Result<BlobTicketInfo, String> {
     info!("Sending file: {}", file_path);
 
     let endpoint = state
@@ -53,7 +44,7 @@ async fn send_file(
         .map_err(|e| format!("Node not initialized: {}", e))?;
 
     let path = PathBuf::from(file_path);
-    let ticket_info = iroh::create_send_ticket(&endpoint, path)
+    let ticket_info = iroh::transfer::create_send_ticket(&endpoint, path)
         .await
         .map_err(|e| format!("Failed to create ticket: {}", e))?;
 
@@ -84,7 +75,7 @@ async fn receive_file(
         .map_err(|e| format!("Node not initialized: {}", e))?;
 
     let path = PathBuf::from(output_path);
-    let transfer = iroh::receive_file(&endpoint, ticket, path)
+    let transfer = iroh::transfer::receive_file(&endpoint, ticket, path)
         .await
         .map_err(|e| format!("Failed to receive file: {}", e))?;
 
@@ -113,11 +104,11 @@ fn get_device_name() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    init_logging();
-
     let app_state = AppState::new();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![

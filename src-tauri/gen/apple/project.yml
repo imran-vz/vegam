@@ -10,7 +10,7 @@ configs:
 settingGroups:
   app:
     base:
-      PRODUCT_NAME: vegam
+      PRODUCT_NAME: Vegam
       PRODUCT_BUNDLE_IDENTIFIER: codes.imran.vegam
 targetTemplates:
   app:

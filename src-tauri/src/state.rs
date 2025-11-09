@@ -62,29 +62,29 @@ impl AppState {
         transfers.insert(transfer.id.clone(), transfer);
     }
 
-    pub async fn update_transfer_progress(&self, id: &str, bytes_transferred: u64) {
-        let mut transfers = self.transfers.write().await;
-        if let Some(transfer) = transfers.get_mut(id) {
-            transfer.bytes_transferred = bytes_transferred;
-        }
-    }
+    // pub async fn update_transfer_progress(&self, id: &str, bytes_transferred: u64) {
+    //     let mut transfers = self.transfers.write().await;
+    //     if let Some(transfer) = transfers.get_mut(id) {
+    //         transfer.bytes_transferred = bytes_transferred;
+    //     }
+    // }
 
-    pub async fn update_transfer_status(&self, id: &str, status: TransferStatus) {
-        let mut transfers = self.transfers.write().await;
-        if let Some(transfer) = transfers.get_mut(id) {
-            transfer.status = status;
-        }
-    }
+    // pub async fn update_transfer_status(&self, id: &str, status: TransferStatus) {
+    //     let mut transfers = self.transfers.write().await;
+    //     if let Some(transfer) = transfers.get_mut(id) {
+    //         transfer.status = status;
+    //     }
+    // }
 
     pub async fn get_transfer(&self, id: &str) -> Option<TransferInfo> {
         let transfers = self.transfers.read().await;
         transfers.get(id).cloned()
     }
 
-    pub async fn add_peer(&self, peer: PeerInfo) {
-        let mut peers = self.peers.write().await;
-        peers.insert(peer.node_id.clone(), peer);
-    }
+    // pub async fn add_peer(&self, peer: PeerInfo) {
+    //     let mut peers = self.peers.write().await;
+    //     peers.insert(peer.node_id.clone(), peer);
+    // }
 
     pub async fn get_peers(&self) -> Vec<PeerInfo> {
         let peers = self.peers.read().await;
