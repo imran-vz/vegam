@@ -1,4 +1,5 @@
 {
+  "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile-capability",
   "platforms": [
     "android",
@@ -8,7 +9,22 @@
     "main"
   ],
   "permissions": [
+    "core:default",
+    "opener:default",
+    "dialog:default",
+    "log:default",
+    "fs:default",
+    "fs:allow-read",
+    "fs:allow-read-file",
+    "fs:allow-write",
+    "fs:allow-write-file",
+    "clipboard-manager:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:deny-clear",
+    "barcode-scanner:allow-cancel",
     "barcode-scanner:allow-scan",
-    "barcode-scanner:allow-cancel"
+    "barcode-scanner:allow-request-permissions",
+    "barcode-scanner:allow-check-permissions"
   ]
 }

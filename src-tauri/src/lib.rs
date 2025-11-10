@@ -100,32 +100,82 @@ async fn send_file(
         .await
         .map_err(|e| format!("Node not initialized: {}", e))?;
 
+    // Generate transfer ID upfront
+    let transfer_id = uuid::Uuid::new_v4().to_string();
+
+    // Emit initial pending status
+    let initial_transfer = TransferInfo {
+        id: transfer_id.clone(),
+        file_name: std::path::PathBuf::from(&file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string(),
+        file_size: 0,
+        bytes_transferred: 0,
+        status: TransferStatus::Pending,
+        error: None,
+        direction: TransferDirection::Send,
+        speed_bps: 0,
+    };
+    state.add_transfer(initial_transfer.clone()).await;
+    let _ = app.emit("transfer-update", &initial_transfer);
+
     // Read file using platform-specific handler (handles Android content URIs)
+    let start_time = std::time::Instant::now();
     let file_data = platform::read_file(&app, &file_path)
         .await
         .map_err(|e| format!("Failed to read file: {}", e))?;
+
+    let file_size = file_data.len() as u64;
+    let elapsed = start_time.elapsed().as_secs_f64();
+    let speed_bps = if elapsed > 0.0 {
+        (file_size as f64 / elapsed) as u64
+    } else {
+        0
+    };
+
+    // Emit reading complete status
+    let reading_transfer = TransferInfo {
+        id: transfer_id.clone(),
+        file_name: initial_transfer.file_name.clone(),
+        file_size,
+        bytes_transferred: file_size,
+        status: TransferStatus::InProgress,
+        error: None,
+        direction: TransferDirection::Send,
+        speed_bps,
+    };
+    state.add_transfer(reading_transfer.clone()).await;
+    let _ = app.emit("transfer-progress", &reading_transfer);
 
     let ticket_info = iroh::transfer::create_send_ticket(&iroh, file_data, file_path)
         .await
         .map_err(|e| format!("Failed to create ticket: {}", e))?;
 
-    // Add transfer to state
+    // Add final completed transfer to state
     let transfer = TransferInfo {
-        id: ticket_info.transfer_id.clone(),
+        id: transfer_id.clone(),
         file_name: ticket_info.file_name.clone(),
         file_size: ticket_info.file_size,
-        bytes_transferred: ticket_info.file_size, // Already "transferred" since we read it
+        bytes_transferred: ticket_info.file_size,
         status: TransferStatus::Completed,
         error: None,
         direction: TransferDirection::Send,
-        speed_bps: 0,
+        speed_bps,
     };
     state.add_transfer(transfer.clone()).await;
 
-    // Emit event
+    // Emit completed event
     let _ = app.emit("transfer-update", &transfer);
 
-    Ok(ticket_info)
+    // Return ticket info with transfer ID
+    Ok(BlobTicketInfo {
+        ticket: ticket_info.ticket,
+        file_name: ticket_info.file_name,
+        file_size: ticket_info.file_size,
+        transfer_id,
+    })
 }
 
 #[tauri::command]
@@ -326,7 +376,15 @@ async fn get_relay_status(state: State<'_, AppState>) -> Result<RelayStatus, Str
         .await
         .map_err(|e| format!("Node not initialized: {}", e))?;
 
-    let relay_url = iroh.node_addr.relay_urls().next();
+    let relay_urls: Vec<_> = iroh.node_addr.relay_urls().collect();
+    let relay_url = relay_urls.first();
+
+    if relay_url.is_none() {
+        info!("No relay connection established - check network and relay server accessibility");
+    } else {
+        info!("Relay connected: {:?}", relay_url);
+    }
+
     Ok(RelayStatus {
         connected: relay_url.is_some(),
         relay_url: relay_url.map(|u| u.to_string()),
@@ -339,6 +397,7 @@ pub fn run() {
 
     #[cfg(target_os = "android")]
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_barcode_scanner::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -361,6 +420,7 @@ pub fn run() {
 
     #[cfg(not(target_os = "android"))]
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

@@ -167,18 +167,21 @@ impl Iroh {
         let blobs = store.blobs().clone();
         let downloader = store.downloader(&endpoint);
 
-        // Wait briefly for relay connection to establish
+        // Wait for relay connection to establish (longer timeout for mobile networks)
         tracing::info!("Waiting for relay connection...");
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         // Get node address with relay info (endpoint.addr() includes relay URLs)
         let node_id = endpoint.id();
         let node_addr = endpoint.addr();
 
-        tracing::info!(
-            "Node address created with relay info: {:?}",
-            node_addr.relay_urls().collect::<Vec<_>>()
-        );
+        let relay_urls: Vec<_> = node_addr.relay_urls().collect();
+        if relay_urls.is_empty() {
+            tracing::warn!("No relay URLs found in node address - NAT traversal may fail");
+            tracing::warn!("Check network connectivity and relay server accessibility");
+        } else {
+            tracing::info!("Relay connection established: {:?}", relay_urls);
+        }
 
         let gossip = GossipClient::new(gossip, node_id).await?;
 

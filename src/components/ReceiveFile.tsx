@@ -1,5 +1,6 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { debug } from "@tauri-apps/plugin-log";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { Download, Loader2 } from "lucide-react";
 import { useEffect, useReducer, useState } from "react";
 
@@ -75,8 +76,8 @@ export function ReceiveFile() {
 
 	const handlePaste = async () => {
 		try {
-			const text = await navigator.clipboard.readText();
-			if (text.trim()) {
+			const text = await readText();
+			if (text?.trim()) {
 				dispatch({ type: "SET_TICKET", ticket: text.trim() });
 			}
 		} catch (err) {

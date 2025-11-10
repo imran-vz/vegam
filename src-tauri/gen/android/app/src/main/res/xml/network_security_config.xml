@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Base config: Enforce HTTPS by default -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Allow HTTPS connections to Iroh relay servers -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">iroh.computer</domain>
+        <domain includeSubdomains="true">iroh.network</domain>
+        <domain includeSubdomains="true">n0.computer</domain>
+    </domain-config>
+</network-security-config>

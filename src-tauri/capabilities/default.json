@@ -10,10 +10,13 @@
     "opener:default",
     "dialog:default",
     "log:default",
-    "fs:default",
     "fs:allow-read",
     "fs:allow-read-file",
     "fs:allow-write",
-    "fs:allow-write-file"
+    "fs:allow-write-file",
+    "clipboard-manager:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:deny-clear"
   ]
 }

@@ -1,8 +1,9 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { debug } from "@tauri-apps/plugin-log";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Check, Copy, File, Loader2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { useReducer, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,13 +14,53 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
-import { sendFile } from "@/lib/api";
+import { Progress } from "@/components/ui/progress";
+import {
+	listenToTransferProgress,
+	listenToTransferUpdates,
+	sendFile,
+} from "@/lib/api";
 import { sendFileReducer } from "@/lib/state-machines";
-import { formatFileSize, parseError } from "@/lib/utils";
+import {
+	formatFileSize,
+	formatTransferSpeed,
+	parseError,
+} from "@/lib/utils";
 
 export function SendFile() {
 	const [state, dispatch] = useReducer(sendFileReducer, { type: "idle" });
 	const [copied, setCopied] = useState(false);
+
+	// Listen for transfer progress and completion updates
+	useEffect(() => {
+		const unlistenProgress = listenToTransferProgress((progress) => {
+			if (state.type === "uploading" && progress.id === state.transfer.id) {
+				dispatch({
+					type: "PROGRESS_UPDATE",
+					bytesTransferred: progress.bytes_transferred,
+					fileSize: progress.file_size,
+					speed_bps: progress.speed_bps,
+				});
+			}
+		});
+
+		const unlistenUpdate = listenToTransferUpdates((transfer) => {
+			if (state.type === "uploading" && transfer.id === state.transfer.id) {
+				if (transfer.status === "completed") {
+					// Will get ticket from sendFile promise
+					return;
+				}
+			} else if (state.type === "selecting" && transfer.direction === "send") {
+				// Initial transfer update
+				dispatch({ type: "UPLOAD_STARTED", transfer });
+			}
+		});
+
+		return () => {
+			unlistenProgress.then((fn) => fn());
+			unlistenUpdate.then((fn) => fn());
+		};
+	}, [state]);
 
 	const handleSelectFile = async () => {
 		try {
@@ -48,19 +89,20 @@ export function SendFile() {
 	const handleCopyTicket = async () => {
 		if (state.type !== "success") return;
 
-		await navigator.clipboard.writeText(state.data.ticket);
+		await writeText(state.data.ticket);
 		setCopied(true);
 		setTimeout(() => setCopied(false), 2000);
 	};
 
-	const isLoading = state.type === "selecting" || state.type === "generating";
+	const isLoading =
+		state.type === "selecting" || state.type === "uploading";
 
 	const getButtonText = () => {
 		switch (state.type) {
 			case "selecting":
 				return "Selecting File";
-			case "generating":
-				return "Generating Ticket";
+			case "uploading":
+				return "Uploading...";
 			default:
 				return "Select File";
 		}
@@ -75,7 +117,7 @@ export function SendFile() {
 				</CardDescription>
 			</CardHeader>
 			<CardContent className="space-y-4">
-				{state.type !== "success" ? (
+				{state.type !== "success" && state.type !== "uploading" ? (
 					<Button
 						onClick={handleSelectFile}
 						disabled={isLoading}
@@ -89,6 +131,45 @@ export function SendFile() {
 
 						{getButtonText()}
 					</Button>
+				) : state.type === "uploading" ? (
+					<div className="space-y-4">
+						<div className="p-3 bg-muted rounded-lg">
+							<p className="font-medium">{state.transfer.file_name}</p>
+							<p className="text-sm text-muted-foreground">
+								{formatFileSize(state.transfer.file_size)}
+							</p>
+						</div>
+
+						<div className="space-y-2">
+							<div className="flex justify-between text-sm">
+								<span>Uploading...</span>
+								<span>
+									{state.transfer.file_size > 0
+										? Math.round(
+												(state.transfer.bytes_transferred /
+													state.transfer.file_size) *
+													100,
+											)
+										: 0}
+									%
+								</span>
+							</div>
+							<Progress
+								value={
+									state.transfer.file_size > 0
+										? (state.transfer.bytes_transferred /
+												state.transfer.file_size) *
+											100
+										: 0
+								}
+							/>
+							{state.transfer.speed_bps > 0 && (
+								<div className="text-xs text-muted-foreground text-right">
+									{formatTransferSpeed(state.transfer.speed_bps)}
+								</div>
+							)}
+						</div>
+					</div>
 				) : (
 					<div className="space-y-4">
 						<div className="flex items-center justify-between p-3 bg-muted rounded-lg">

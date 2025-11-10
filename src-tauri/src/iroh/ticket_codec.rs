@@ -18,7 +18,8 @@ fn derive_key(node_id: &str) -> [u8; 32] {
 }
 
 /// Encrypt a ticket string using AES-256-GCM
-/// Format: vegam:base64(nonce || ciphertext)
+/// Format: vegam://node_id:base64(nonce || ciphertext)
+/// The node_id is included so the receiver can derive the same key
 pub fn encrypt_ticket(ticket: &str, node_id: &str) -> Result<String> {
     let key_bytes = derive_key(node_id);
     let cipher = Aes256Gcm::new(&key_bytes.into());
@@ -38,18 +39,28 @@ pub fn encrypt_ticket(ticket: &str, node_id: &str) -> Result<String> {
     combined.extend_from_slice(&nonce_bytes);
     combined.extend_from_slice(&ciphertext);
 
-    // Encode to base64
+    // Encode to base64 and include node_id in the ticket
     let encoded = URL_SAFE_NO_PAD.encode(&combined);
-    Ok(format!("vegam:{}", encoded))
+    Ok(format!("vegam://{}:{}", node_id, encoded))
 }
 
 /// Decrypt a ticket string using AES-256-GCM
-/// Supports encrypted format: vegam:base64(nonce || ciphertext)
-pub fn decrypt_ticket(ticket: &str, node_id: &str) -> Result<String> {
+/// Supports encrypted format: vegam://node_id:base64(nonce || ciphertext)
+/// The node_id parameter is ignored - we use the node_id from the ticket
+pub fn decrypt_ticket(ticket: &str, _receiver_node_id: &str) -> Result<String> {
     // Check if it's an encrypted ticket
-    let encoded = ticket
-        .strip_prefix("vegam:")
-        .ok_or_else(|| anyhow::anyhow!("Invalid ticket format: missing 'vegam:' prefix"))?;
+    let without_prefix = ticket
+        .strip_prefix("vegam://")
+        .ok_or_else(|| anyhow::anyhow!("Invalid ticket format: missing 'vegam:// prefix"))?;
+
+    // Split to get sender's node_id and encrypted data
+    let parts: Vec<&str> = without_prefix.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err(anyhow::anyhow!("Invalid ticket format: missing node_id"));
+    }
+
+    let sender_node_id = parts[0];
+    let encoded = parts[1];
 
     // Decode from base64
     let combined = URL_SAFE_NO_PAD
@@ -61,12 +72,13 @@ pub fn decrypt_ticket(ticket: &str, node_id: &str) -> Result<String> {
         return Err(anyhow::anyhow!("Invalid ticket: too short"));
     }
     let (nonce_bytes, ciphertext) = combined.split_at(12);
-    let nonce_array: [u8; 12] = nonce_bytes.try_into()
+    let nonce_array: [u8; 12] = nonce_bytes
+        .try_into()
         .map_err(|_| anyhow::anyhow!("Invalid nonce size"))?;
     let nonce = Nonce::from(nonce_array);
 
-    // Derive key and decrypt
-    let key_bytes = derive_key(node_id);
+    // Derive key using sender's node_id (not receiver's)
+    let key_bytes = derive_key(sender_node_id);
     let cipher = Aes256Gcm::new(&key_bytes.into());
 
     let plaintext = cipher
@@ -86,7 +98,7 @@ mod tests {
         let node_id = "test-node-id";
 
         let encrypted = encrypt_ticket(original, node_id).unwrap();
-        assert!(encrypted.starts_with("vegam:"));
+        assert!(encrypted.starts_with("vegam://"));
 
         let decrypted = decrypt_ticket(&encrypted, node_id).unwrap();
         assert_eq!(decrypted, original);
@@ -104,13 +116,13 @@ mod tests {
         // Different node IDs should produce different ciphertexts
         assert_ne!(encrypted1, encrypted2);
 
-        // Each can decrypt with their own node ID
-        assert_eq!(decrypt_ticket(&encrypted1, node1).unwrap(), ticket);
-        assert_eq!(decrypt_ticket(&encrypted2, node2).unwrap(), ticket);
+        // Encrypted tickets include the sender's node_id
+        assert!(encrypted1.contains("node-1"));
+        assert!(encrypted2.contains("node-2"));
 
-        // Cross-decryption should fail
-        assert!(decrypt_ticket(&encrypted1, node2).is_err());
-        assert!(decrypt_ticket(&encrypted2, node1).is_err());
+        // Any receiver can decrypt because sender's node_id is in the ticket
+        assert_eq!(decrypt_ticket(&encrypted1, "any-receiver").unwrap(), ticket);
+        assert_eq!(decrypt_ticket(&encrypted2, "any-receiver").unwrap(), ticket);
     }
 
     #[test]
@@ -121,10 +133,10 @@ mod tests {
         assert!(decrypt_ticket("invalid", node_id).is_err());
 
         // Invalid base64
-        assert!(decrypt_ticket("vegam:!!!", node_id).is_err());
+        assert!(decrypt_ticket("vegam://!!!", node_id).is_err());
 
         // Too short
-        assert!(decrypt_ticket("vegam:AA", node_id).is_err());
+        assert!(decrypt_ticket("vegam://AA", node_id).is_err());
     }
 
     #[test]

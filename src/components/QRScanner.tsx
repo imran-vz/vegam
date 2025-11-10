@@ -1,6 +1,6 @@
-import { Html5Qrcode } from "html5-qrcode";
+import { cancel, Format, scan } from "@tauri-apps/plugin-barcode-scanner";
 import { QrCode, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
 interface QRScannerProps {
@@ -11,33 +11,23 @@ interface QRScannerProps {
 export function QRScanner({ onScan, onError }: QRScannerProps) {
 	const [isScanning, setIsScanning] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const scannerRef = useRef<Html5Qrcode | null>(null);
-	const qrCodeRegionId = "qr-reader";
 
 	const startScanning = async () => {
 		try {
 			setError(null);
 			setIsScanning(true);
 
-			const scanner = new Html5Qrcode(qrCodeRegionId);
-			scannerRef.current = scanner;
+			// windowed: true makes webview transparent to show camera underneath
+			const result = await scan({
+				windowed: true,
+				formats: [Format.QRCode],
+			});
 
-			await scanner.start(
-				{ facingMode: "environment" },
-				{
-					fps: 10,
-					qrbox: { width: 250, height: 250 },
-				},
-				(decodedText) => {
-					// Success callback
-					onScan(decodedText);
-					stopScanning();
-				},
-				() => {
-					// Error callback (typically just "No QR code found")
-					// Don't show these as errors, they're expected
-				},
-			);
+			if (result?.content) {
+				onScan(result.content);
+			}
+
+			setIsScanning(false);
 		} catch (err) {
 			const errorMsg =
 				err instanceof Error ? err.message : "Failed to start camera";
@@ -48,24 +38,13 @@ export function QRScanner({ onScan, onError }: QRScannerProps) {
 	};
 
 	const stopScanning = async () => {
-		if (scannerRef.current) {
-			try {
-				await scannerRef.current.stop();
-				scannerRef.current = null;
-			} catch (err) {
-				console.error("Error stopping scanner:", err);
-			}
+		try {
+			await cancel();
+		} catch (err) {
+			console.error("Error stopping scanner:", err);
 		}
 		setIsScanning(false);
 	};
-
-	useEffect(() => {
-		return () => {
-			if (scannerRef.current) {
-				scannerRef.current.stop().catch(console.error);
-			}
-		};
-	}, []);
 
 	return (
 		<div className="space-y-4">
@@ -76,10 +55,11 @@ export function QRScanner({ onScan, onError }: QRScannerProps) {
 				</Button>
 			) : (
 				<div className="space-y-2">
-					<div
-						id={qrCodeRegionId}
-						className="w-full rounded-lg overflow-hidden"
-					/>
+					<div className="w-full h-64 bg-black/20 rounded-lg flex items-center justify-center">
+						<p className="text-sm text-muted-foreground">
+							Point camera at QR code
+						</p>
+					</div>
 					<Button onClick={stopScanning} className="w-full" variant="outline">
 						<X className="size-4" />
 						Cancel Scan

@@ -1,4 +1,3 @@
-import { debug } from "@tauri-apps/plugin-log";
 import { Wifi, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ReceiveFile } from "@/components/ReceiveFile";
@@ -21,7 +20,7 @@ function App() {
 		console.log("Initializing app");
 		const initialize = async () => {
 			try {
-				debug("Initializing node");
+				console.log("Initializing node");
 				const id = await initNode();
 				setNodeId(id);
 

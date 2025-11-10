@@ -4,7 +4,7 @@ import type { BlobTicketInfo, TransferInfo } from "./api";
 export type SendFileState =
 	| { type: "idle" }
 	| { type: "selecting" }
-	| { type: "generating" }
+	| { type: "uploading"; transfer: TransferInfo }
 	| { type: "success"; data: BlobTicketInfo }
 	| { type: "error"; error: string };
 
@@ -12,6 +12,13 @@ export type SendFileEvent =
 	| { type: "SELECT_FILE" }
 	| { type: "FILE_SELECTED"; path: string }
 	| { type: "FILE_SELECTION_CANCELLED" }
+	| { type: "UPLOAD_STARTED"; transfer: TransferInfo }
+	| {
+			type: "PROGRESS_UPDATE";
+			bytesTransferred: number;
+			fileSize: number;
+			speed_bps: number;
+	  }
 	| { type: "TICKET_GENERATED"; ticket: BlobTicketInfo }
 	| { type: "ERROR"; error: string }
 	| { type: "RESET" };
@@ -29,7 +36,11 @@ export function sendFileReducer(
 
 		case "selecting":
 			if (event.type === "FILE_SELECTED") {
-				return { type: "generating" };
+				// Transition happens via UPLOAD_STARTED event
+				return state;
+			}
+			if (event.type === "UPLOAD_STARTED") {
+				return { type: "uploading", transfer: event.transfer };
 			}
 			if (event.type === "FILE_SELECTION_CANCELLED") {
 				return { type: "idle" };
@@ -39,7 +50,18 @@ export function sendFileReducer(
 			}
 			break;
 
-		case "generating":
+		case "uploading":
+			if (event.type === "PROGRESS_UPDATE") {
+				return {
+					type: "uploading",
+					transfer: {
+						...state.transfer,
+						bytes_transferred: event.bytesTransferred,
+						file_size: event.fileSize || state.transfer.file_size,
+						speed_bps: event.speed_bps,
+					},
+				};
+			}
 			if (event.type === "TICKET_GENERATED") {
 				return { type: "success", data: event.ticket };
 			}
