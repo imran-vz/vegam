@@ -24,6 +24,11 @@ export interface BlobTicketInfo {
 	transfer_id: string;
 }
 
+export interface TicketMetadata {
+	filename: string;
+	size: number;
+}
+
 export async function initNode(): Promise<string> {
 	return await invoke<string>("init_node");
 }
@@ -73,4 +78,10 @@ export async function listenToTransferProgress(
 	return await listen<TransferInfo>("transfer-progress", (event) => {
 		callback(event.payload);
 	});
+}
+
+export async function parseTicketMetadata(
+	ticket: string,
+): Promise<TicketMetadata> {
+	return await invoke<TicketMetadata>("parse_ticket_metadata", { ticket });
 }

@@ -53,17 +53,38 @@ pub async fn create_send_ticket_from_bytes(
 
     let transfer_id = Uuid::new_v4().to_string();
 
+    // Encode filename and size in ticket format: filename|size|blob_ticket
+    let enhanced_ticket = format!("{}|{}|{}", file_name, file_size, ticket_str);
+
     Ok(BlobTicketInfo {
-        ticket: ticket_str,
+        ticket: enhanced_ticket,
         file_name,
         file_size,
         transfer_id,
     })
 }
 
+/// Parse enhanced ticket format: filename|size|blob_ticket
+/// Returns (filename, size, BlobTicket)
+pub fn parse_enhanced_ticket(ticket_str: &str) -> Result<(String, u64, BlobTicket)> {
+    let parts: Vec<&str> = ticket_str.splitn(3, '|').collect();
+
+    if parts.len() == 3 {
+        // Enhanced format with metadata
+        let filename = parts[0].to_string();
+        let size = parts[1].parse::<u64>()?;
+        let ticket: BlobTicket = parts[2].parse()?;
+        Ok((filename, size, ticket))
+    } else {
+        // Legacy format without metadata
+        let ticket: BlobTicket = ticket_str.parse()?;
+        Ok(("received_file".to_string(), 0, ticket))
+    }
+}
+
 /// Parse a ticket string and extract metadata
 pub fn parse_ticket(ticket_str: &str) -> Result<BlobTicket> {
-    let ticket: BlobTicket = ticket_str.parse()?;
+    let (_filename, _size, ticket) = parse_enhanced_ticket(ticket_str)?;
     Ok(ticket)
 }
 

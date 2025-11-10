@@ -154,6 +154,19 @@ fn get_device_name() -> String {
     iroh::discovery::get_device_name()
 }
 
+#[derive(serde::Serialize)]
+struct TicketMetadata {
+    filename: String,
+    size: u64,
+}
+
+#[tauri::command]
+fn parse_ticket_metadata(ticket: String) -> Result<TicketMetadata, String> {
+    let (filename, size, _) = iroh::transfer::parse_enhanced_ticket(&ticket)
+        .map_err(|e| format!("Failed to parse ticket: {}", e))?;
+    Ok(TicketMetadata { filename, size })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState::new();
@@ -201,6 +214,7 @@ pub fn run() {
             get_transfer_status,
             list_peers,
             get_device_name,
+            parse_ticket_metadata,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
