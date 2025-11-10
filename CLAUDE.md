@@ -11,23 +11,28 @@ Vegam is a P2P file transfer app built with Tauri v2, React, TypeScript, and Iro
 ### Desktop Development
 
 ```bash
-pnpm dev                    # Start dev server (frontend + Tauri)
-pnpm build                  # Build production app
-cargo check                 # Check Rust code (run in src-tauri/)
+pnpm tauri dev              # Start dev server (frontend + Tauri)
+pnpm tauri build            # Build production app
+make dev                    # Alternative: run desktop dev mode
+make build-desktop          # Alternative: build desktop app
 ```
 
 ### Android Development
 
 ```bash
-pnpm run tauri android build    # Build Android APK
-pnpm run tauri android dev      # Run on Android device/emulator
+pnpm tauri android dev      # Run on Android device/emulator
+pnpm tauri android build    # Build debug APK
+make android-release        # Build signed release APK (requires keystore setup)
+make android-install        # Install debug APK to connected device
 ```
 
-### Testing
+### Testing and Validation
 
 ```bash
-cargo test                  # Run Rust tests (run in src-tauri/)
-cargo check                 # Verify compilation
+cd src-tauri && cargo check # Check Rust compilation
+cd src-tauri && cargo test  # Run Rust tests
+pnpm run check              # Check TypeScript
+make check                  # Install deps + check Rust
 ```
 
 ## Architecture
@@ -52,6 +57,9 @@ cargo check                 # Verify compilation
   - `node.rs` - Iroh endpoint initialization, node ID management
   - `transfer.rs` - file transfer logic (send/receive tickets)
   - `discovery.rs` - device name resolution
+- **Platform Abstraction**: `src-tauri/src/platform.rs`
+  - Handles Android content:// URIs via `tauri-plugin-android-fs`
+  - Desktop uses standard tokio::fs
 
 ### Data Flow
 
@@ -62,38 +70,63 @@ cargo check                 # Verify compilation
 
 2. **Send File**:
    - User selects file via Tauri dialog (returns content URI on Android, file path on desktop)
-   - Backend reads file using `tauri-plugin-fs` (handles content URIs automatically)
-   - Imports file to Iroh blob store
-   - Creates `BlobTicket` with node address and blob hash
-   - Returns ticket string to share
+   - Backend reads file using platform-specific `read_file()` in `platform.rs`
+   - Imports file to Iroh in-memory blob store
+   - Creates enhanced ticket format: `filename|size|blob_ticket`
+   - Returns ticket string to share (includes metadata for receiver)
 
 3. **Receive File**:
    - User pastes ticket string
-   - Backend parses ticket to extract sender's node address and blob hash
+   - Frontend parses ticket to extract filename (via `parse_ticket_metadata` command)
+   - Save dialog opens with Downloads folder and original filename pre-filled
+   - Backend parses full ticket to extract sender's node address and blob hash
    - Connects to sender via Iroh (using relay servers if needed)
-   - Downloads blob and saves to output path
+   - Downloads blob with progress tracking and saves to selected path
 
 ### Key Technical Details
 
-- **Iroh Networking**: Uses in-memory blob store (`iroh::blobs::store::mem::Store`)
-- **NAT Traversal**: Iroh endpoint automatically uses public relay servers
-- **Android File Access**: `tauri-plugin-fs` handles content URIs transparently - standard `tokio::fs` calls work
+- **Iroh Networking**:
+  - Uses in-memory blob store (`iroh::blobs::store::mem::Store`)
+  - Blob provider runs in background tokio task (started via `start_blob_provider()`)
+  - Direct peer-to-peer connections with automatic NAT traversal via relay servers
+
+- **Ticket Format**: Enhanced format `filename|size|blob_ticket`
+  - Backward compatible with legacy format (just blob_ticket)
+  - Parsed via `parse_enhanced_ticket()` in `transfer.rs`
+  - Allows receiver to get original filename before downloading
+
+- **Android File Access**:
+  - Platform-specific handling in `platform.rs`
+  - Android: Uses `tauri-plugin-android-fs` to read content:// URIs
+  - Desktop: Standard `tokio::fs::read()`
+  - File paths from dialog are platform-specific but handled transparently
+
+- **Progress Tracking**:
+  - Transfer progress emitted via `transfer-progress` events
+  - Custom `ProgressWrapper` in `receive_file()` tracks bytes written
+  - Frontend listens to events and updates UI
+
 - **Capabilities**: Defined in `src-tauri/capabilities/default.json` - must include `fs:default` for file operations
-- **Platform Differences**:
+
+- **Logging**:
   - Desktop: uses `tauri-plugin-log`
   - Android: uses `android_logger` (initialized in `init_logging()`)
+  - All logs go to stdout, log dir, and webview console
 
 ### Tauri Commands
 
 All commands defined in `src-tauri/src/lib.rs`:
 
-- `init_node` - initialize Iroh endpoint
+- `init_node` - initialize Iroh endpoint and blob store
 - `get_node_id` - get current node ID
-- `send_file(file_path)` - create send ticket
-- `receive_file(ticket, output_path)` - download file
+- `send_file(file_path)` - create send ticket with metadata
+- `receive_file(ticket, output_path)` - download file from ticket
+- `parse_ticket_metadata(ticket)` - extract filename/size from ticket (no download)
 - `get_transfer_status(transfer_id)` - query transfer state
 - `list_peers` - get discovered peers
 - `get_device_name` - get system device name
+
+TypeScript wrappers in `src/lib/api.ts` provide typed interfaces for all commands.
 
 ## Common Patterns
 
@@ -104,9 +137,17 @@ All commands defined in `src-tauri/src/lib.rs`:
 3. Create TypeScript wrapper in `src/lib/api.ts`
 4. Update capabilities in `default.json` if needed
 
-### Android Content URI Handling
+### Platform-Specific File Handling
 
-Files selected on Android return `content://` URIs. The `tauri-plugin-fs` automatically resolves these when using `tokio::fs` APIs - no special handling needed in application code.
+Files selected on Android return `content://` URIs, while desktop returns standard paths. Use the centralized `platform::read_file()` helper which handles both:
+
+```rust
+// In commands that read files
+let file_data = platform::read_file(&app, &file_path).await
+    .map_err(|e| format!("Failed to read file: {}", e))?;
+```
+
+This function is platform-compiled and uses the appropriate API for each platform.
 
 ### State Access Pattern
 
@@ -119,18 +160,56 @@ async fn my_command(state: State<'_, AppState>) -> Result<T, String> {
 }
 ```
 
+### Working with Enhanced Ticket Format
+
+When adding features that interact with tickets:
+
+```rust
+// Parse ticket to extract metadata
+use crate::iroh::transfer::parse_enhanced_ticket;
+
+let (filename, size, blob_ticket) = parse_enhanced_ticket(&ticket_str)?;
+// Use blob_ticket for actual Iroh operations
+// filename and size are for UI/metadata purposes
+```
+
+The format is backward compatible - old tickets without metadata still parse successfully with default values.
+
 ## Dependencies
 
 ### Critical Rust Crates
 
-- `iroh = "0.26"` - P2P networking (note: pinned version)
-- `iroh-blobs = "0.26"` - blob storage
-- `tauri-plugin-fs` - file system access (handles Android content URIs)
-- `tauri-plugin-dialog` - file picker
+- `iroh = "0.26"` - P2P networking (pinned version - breaking changes expected)
+- `iroh-blobs = "0.26"` - blob storage and transfer protocols
+- `iroh-io` - async I/O primitives for Iroh
+- `tauri-plugin-fs` - file system access (cross-platform)
+- `tauri-plugin-android-fs` - Android-specific file access for content:// URIs
+- `tauri-plugin-dialog` - file picker dialogs
 - `redb = "1.5.2"` - embedded database (pinned version)
 
 ### Frontend
 
 - `@tauri-apps/api` - Tauri JS bindings
-- `@tauri-apps/plugin-dialog` - file dialogs
+- `@tauri-apps/plugin-dialog` - file picker
+- `@tauri-apps/plugin-log` - logging (desktop only)
 - React 19 + TypeScript + Vite
+- shadcn/ui + Tailwind CSS for UI components
+
+## Android Release Process
+
+1. **First time setup**:
+
+   ```bash
+   make android-setup  # Creates keystore
+   ```
+
+2. **Build signed release**:
+
+   ```bash
+   export ANDROID_KEY_PASSWORD=your_password
+   make android-release
+   ```
+
+3. **Output**: `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
+
+Note: Keep `upload-keystore.jks` secure and backed up. Add to `.gitignore`.

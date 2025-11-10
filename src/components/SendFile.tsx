@@ -1,7 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { debug } from "@tauri-apps/plugin-log";
 import { Check, Copy, File, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useReducer, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,28 +11,17 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
-import { type BlobTicketInfo, sendFile } from "@/lib/api";
+import { sendFile } from "@/lib/api";
+import { sendFileReducer } from "@/lib/state-machines";
 import { formatFileSize, parseError } from "@/lib/utils";
 
-const STEPS = {
-	select: "Select File",
-	selecting: "Selecting File",
-	generating: "Generating Ticket",
-	failed: "Failed",
-} as const;
-
 export function SendFile() {
-	const [ticketInfo, setTicketInfo] = useState<BlobTicketInfo | null>(null);
-	const [isLoading, setIsLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [state, dispatch] = useReducer(sendFileReducer, { type: "idle" });
 	const [copied, setCopied] = useState(false);
-	const [step, setStep] = useState<keyof typeof STEPS>("select");
 
 	const handleSelectFile = async () => {
 		try {
-			setIsLoading(true);
-			setError(null);
-			setStep("selecting");
+			dispatch({ type: "SELECT_FILE" });
 
 			const selected = await open({
 				multiple: false,
@@ -40,29 +29,39 @@ export function SendFile() {
 			});
 
 			if (!selected) {
-				setStep("select");
+				dispatch({ type: "FILE_SELECTION_CANCELLED" });
 				return;
 			}
 
 			debug(`selected file: ${selected}`);
-			setStep("generating");
+			dispatch({ type: "FILE_SELECTED", path: selected });
+
 			const ticket = await sendFile(selected);
-			setStep("select");
-			setTicketInfo(ticket);
+			dispatch({ type: "TICKET_GENERATED", ticket });
 		} catch (err) {
-			setError(parseError(err));
-			setStep("failed");
-		} finally {
-			setIsLoading(false);
+			dispatch({ type: "ERROR", error: parseError(err) });
 		}
 	};
 
 	const handleCopyTicket = async () => {
-		if (!ticketInfo) return;
+		if (state.type !== "success") return;
 
-		await navigator.clipboard.writeText(ticketInfo.ticket);
+		await navigator.clipboard.writeText(state.data.ticket);
 		setCopied(true);
 		setTimeout(() => setCopied(false), 2000);
+	};
+
+	const isLoading = state.type === "selecting" || state.type === "generating";
+
+	const getButtonText = () => {
+		switch (state.type) {
+			case "selecting":
+				return "Selecting File";
+			case "generating":
+				return "Generating Ticket";
+			default:
+				return "Select File";
+		}
 	};
 
 	return (
@@ -74,7 +73,7 @@ export function SendFile() {
 				</CardDescription>
 			</CardHeader>
 			<CardContent className="space-y-4">
-				{!ticketInfo ? (
+				{state.type !== "success" ? (
 					<Button
 						onClick={handleSelectFile}
 						disabled={isLoading}
@@ -86,15 +85,15 @@ export function SendFile() {
 							<File className="h-4 w-4" />
 						)}
 
-						{STEPS[step]}
+						{getButtonText()}
 					</Button>
 				) : (
 					<div className="space-y-4">
 						<div className="flex items-center justify-between p-3 bg-muted rounded-lg">
 							<div>
-								<p className="font-medium">{ticketInfo.file_name}</p>
+								<p className="font-medium">{state.data.file_name}</p>
 								<p className="text-sm text-muted-foreground">
-									{formatFileSize(ticketInfo.file_size)}
+									{formatFileSize(state.data.file_size)}
 								</p>
 							</div>
 							<Badge>Ready</Badge>
@@ -109,7 +108,7 @@ export function SendFile() {
 									id="transfer-ticket"
 									className="flex-1 p-2 bg-muted rounded text-xs font-mono break-all"
 								>
-									{ticketInfo.ticket.slice(0, 80)}...
+									{state.data.ticket.slice(0, 80)}...
 								</div>
 								<Button
 									size="icon"
@@ -127,7 +126,7 @@ export function SendFile() {
 
 						<Button
 							variant="outline"
-							onClick={() => setTicketInfo(null)}
+							onClick={() => dispatch({ type: "RESET" })}
 							className="w-full"
 						>
 							Send Another File
@@ -135,9 +134,9 @@ export function SendFile() {
 					</div>
 				)}
 
-				{error && (
+				{state.type === "error" && (
 					<div className="p-3 text-sm text-destructive bg-destructive/10 rounded-lg">
-						{error}
+						{state.error}
 					</div>
 				)}
 			</CardContent>

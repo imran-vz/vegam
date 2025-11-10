@@ -29,6 +29,11 @@ export interface TicketMetadata {
 	size: number;
 }
 
+export interface RelayStatus {
+	connected: boolean;
+	relay_url: string | null;
+}
+
 export async function initNode(): Promise<string> {
 	return await invoke<string>("init_node");
 }
@@ -84,4 +89,8 @@ export async function parseTicketMetadata(
 	ticket: string,
 ): Promise<TicketMetadata> {
 	return await invoke<TicketMetadata>("parse_ticket_metadata", { ticket });
+}
+
+export async function getRelayStatus(): Promise<RelayStatus> {
+	return await invoke<RelayStatus>("get_relay_status");
 }

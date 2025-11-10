@@ -49,18 +49,18 @@ android-release: check-keystore check-password
 	@echo "keyAlias=$(KEYSTORE_ALIAS)" >> $(KEYSTORE_PROPS)
 	@echo "storeFile=$(PWD)/$(KEYSTORE_FILE)" >> $(KEYSTORE_PROPS)
 	@echo "Building signed release APK..."
-	pnpm run tauri android build
+	pnpm tauri android build
 	@rm -f $(KEYSTORE_PROPS)
 	@echo ""
 	@echo "Release APK: $(ANDROID_DIR)/app/build/outputs/apk/universal/release/app-universal-release.apk"
 
 android-debug:
 	@echo "Building debug APK..."
-	pnpm run tauri android build
+	pnpm tauri android build
 
-android-install: android-debug
+android-install: android-release
 	@echo "Installing debug APK..."
-	adb install -r $(ANDROID_DIR)/app/build/outputs/apk/debug/app-debug.apk
+	adb install -r $(ANDROID_DIR)/app/build/outputs/apk/universal/release/app-universal-release.apk
 
 clean-android:
 	@echo "Cleaning Android build..."

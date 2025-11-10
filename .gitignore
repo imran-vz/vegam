@@ -26,3 +26,4 @@ dist-ssr
 # Android keystores
 *.keystore
 *.jks
+keystore.properties

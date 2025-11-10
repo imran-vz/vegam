@@ -167,6 +167,26 @@ fn parse_ticket_metadata(ticket: String) -> Result<TicketMetadata, String> {
     Ok(TicketMetadata { filename, size })
 }
 
+#[derive(serde::Serialize)]
+struct RelayStatus {
+    connected: bool,
+    relay_url: Option<String>,
+}
+
+#[tauri::command]
+async fn get_relay_status(state: State<'_, AppState>) -> Result<RelayStatus, String> {
+    let endpoint = state
+        .get_endpoint()
+        .await
+        .map_err(|e| format!("Node not initialized: {}", e))?;
+
+    let relay_url = endpoint.home_relay();
+    Ok(RelayStatus {
+        connected: relay_url.is_some(),
+        relay_url: relay_url.map(|u| u.to_string()),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState::new();
@@ -215,6 +235,7 @@ pub fn run() {
             list_peers,
             get_device_name,
             parse_ticket_metadata,
+            get_relay_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

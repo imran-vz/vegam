@@ -48,6 +48,14 @@ pub async fn create_send_ticket_from_bytes(
 
     // Create ticket with node address info
     let addr = crate::iroh::node::get_node_addr(endpoint);
+
+    info!("Creating ticket with node addr: {}", addr.node_id);
+    info!("Relay URL in ticket: {:?}", addr.relay_url());
+    info!(
+        "Direct addresses in ticket: {:?}",
+        addr.direct_addresses().collect::<Vec<_>>()
+    );
+
     let ticket = BlobTicket::new(addr, *hash.hash(), BlobFormat::Raw)?;
     let ticket_str = ticket.to_string();
 
@@ -153,12 +161,21 @@ where
         .to_string();
 
     info!("Connecting to sender: {}", sender_addr.node_id);
+    info!("Sender relay: {:?}", sender_addr.relay_url());
+    info!(
+        "Sender direct addresses: {:?}",
+        sender_addr.direct_addresses().collect::<Vec<_>>()
+    );
     info!("Requesting hash: {}", hash);
 
     // Connect to sender
     let connection = endpoint
         .connect(sender_addr, iroh_blobs::protocol::ALPN)
-        .await?;
+        .await
+        .map_err(|e| {
+            error!("Failed to connect to sender: {}", e);
+            anyhow::anyhow!("Failed to connect to sender. Ensure both devices can reach the relay server or are on the same network. Error: {}", e)
+        })?;
 
     // Download blob directly
     let request = iroh_blobs::protocol::GetRequest::single(hash);

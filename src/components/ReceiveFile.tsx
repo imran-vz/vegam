@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { debug } from "@tauri-apps/plugin-log";
 import { Download, Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useReducer } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -14,77 +14,63 @@ import {
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { parseTicketMetadata, receiveFile, type TransferInfo } from "@/lib/api";
+import { receiveFileReducer } from "@/lib/state-machines";
 import { formatFileSize, parseError } from "@/lib/utils";
 
-const STEPS = {
-	receive: "Receive",
-	receiving: "Receiving",
-	completed: "Completed",
-	failed: "Failed",
-} as const;
-
 export function ReceiveFile() {
-	const [ticket, setTicket] = useState("");
-	const [isLoading, setIsLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const [activeTransfer, setActiveTransfer] = useState<TransferInfo | null>(
-		null,
-	);
-	const [step, setStep] = useState<keyof typeof STEPS>("receive");
+	const [state, dispatch] = useReducer(receiveFileReducer, {
+		type: "idle",
+		ticket: "",
+	});
 
 	// Listen for transfer progress updates
 	useEffect(() => {
 		const unlisten = listen<TransferInfo>("transfer-progress", (event) => {
 			const progress = event.payload;
-			if (activeTransfer && progress.id === activeTransfer.id) {
-				setActiveTransfer((prev) =>
-					prev
-						? {
-								...prev,
-								bytes_transferred: progress.bytes_transferred,
-								file_size: progress.file_size || prev.file_size,
-								status: progress.status,
-							}
-						: null,
-				);
+			if (state.type === "downloading" && progress.id === state.transfer.id) {
+				dispatch({
+					type: "PROGRESS_UPDATE",
+					bytesTransferred: progress.bytes_transferred,
+					fileSize: progress.file_size,
+				});
 			}
 		});
 
 		return () => {
 			unlisten.then((fn) => fn());
 		};
-	}, [activeTransfer]);
+	}, [state]);
 
 	const handlePaste = async () => {
 		try {
 			const text = await navigator.clipboard.readText();
 			if (text.trim()) {
-				setTicket(text.trim());
+				dispatch({ type: "SET_TICKET", ticket: text.trim() });
 			}
 		} catch (err) {
-			setError(parseError(err));
+			dispatch({ type: "ERROR", error: parseError(err) });
 		}
 	};
 
 	const handleReceive = async () => {
-		if (!ticket.trim()) {
-			setError("Please enter a transfer ticket");
-			setStep("receive");
+		dispatch({ type: "RECEIVE" });
+
+		if (state.type !== "idle" || !state.ticket.trim()) {
 			return;
 		}
 
-		try {
-			setIsLoading(true);
-			setError(null);
-			setStep("receiving");
+		const ticket = state.ticket;
 
+		try {
 			// Parse ticket to get filename
 			let defaultFilename = "received_file";
 			try {
 				const metadata = await parseTicketMetadata(ticket);
 				defaultFilename = metadata.filename;
+				dispatch({ type: "METADATA_PARSED", filename: defaultFilename });
 			} catch (e) {
 				debug(`Could not parse ticket metadata: ${e}`);
+				dispatch({ type: "METADATA_PARSE_FAILED" });
 			}
 
 			// Open save dialog with Downloads as default location and proper filename
@@ -93,28 +79,41 @@ export function ReceiveFile() {
 			});
 
 			if (!selectedPath) {
-				setStep("receive");
-				setIsLoading(false);
+				dispatch({ type: "PATH_SELECTION_CANCELLED" });
 				return;
 			}
 
 			debug(`selectedPath: ${selectedPath}`);
+			dispatch({ type: "PATH_SELECTED", path: selectedPath });
 
 			// Start receiving immediately
 			const transfer = await receiveFile(ticket, selectedPath);
+			dispatch({ type: "DOWNLOAD_STARTED", transfer });
 
-			setActiveTransfer(transfer);
-			setStep("completed");
-			setTicket("");
-
+			// Auto-reset after completion
 			setTimeout(() => {
-				setStep("receive");
+				dispatch({ type: "RESET" });
 			}, 1500);
 		} catch (err) {
-			setError(parseError(err));
-			setStep("failed");
-		} finally {
-			setIsLoading(false);
+			dispatch({ type: "ERROR", error: parseError(err) });
+		}
+	};
+
+	const isLoading =
+		state.type === "parsing_metadata" ||
+		state.type === "awaiting_path" ||
+		state.type === "downloading";
+
+	const getButtonText = () => {
+		switch (state.type) {
+			case "parsing_metadata":
+			case "awaiting_path":
+			case "downloading":
+				return "Receiving";
+			case "success":
+				return "Completed";
+			default:
+				return "Receive";
 		}
 	};
 
@@ -127,12 +126,14 @@ export function ReceiveFile() {
 				</CardDescription>
 			</CardHeader>
 			<CardContent className="space-y-4">
-				{!activeTransfer ? (
+				{state.type !== "downloading" && state.type !== "success" ? (
 					<>
 						<div className="space-y-2">
 							<textarea
-								value={ticket}
-								onChange={(e) => setTicket(e.target.value)}
+								value={state.type === "idle" ? state.ticket : ""}
+								onChange={(e) =>
+									dispatch({ type: "SET_TICKET", ticket: e.target.value })
+								}
 								placeholder="Paste transfer ticket here..."
 								className="w-full h-24 p-3 text-sm font-mono border rounded-lg resize-none"
 							/>
@@ -148,7 +149,9 @@ export function ReceiveFile() {
 
 						<Button
 							onClick={handleReceive}
-							disabled={isLoading || !ticket.trim()}
+							disabled={
+								isLoading || (state.type === "idle" && !state.ticket.trim())
+							}
 							className="w-full"
 						>
 							{isLoading ? (
@@ -157,24 +160,19 @@ export function ReceiveFile() {
 								<Download className="mr-2 h-4 w-4" />
 							)}
 
-							{STEPS[step]}
+							{getButtonText()}
 						</Button>
 					</>
 				) : (
 					<div className="space-y-4">
 						<div className="p-3 bg-muted rounded-lg">
-							<p className="font-medium">{activeTransfer.file_name}</p>
+							<p className="font-medium">{state.transfer.file_name}</p>
 							<p className="text-sm text-muted-foreground">
-								{formatFileSize(activeTransfer.file_size)}
+								{formatFileSize(state.transfer.file_size)}
 							</p>
 						</div>
 
-						{activeTransfer.status === "failed" && activeTransfer.error ? (
-							<div className="p-3 text-sm text-destructive bg-destructive/10 rounded-lg">
-								<p className="font-medium">Transfer Failed</p>
-								<p className="text-xs mt-1">{activeTransfer.error}</p>
-							</div>
-						) : activeTransfer.status === "completed" ? (
+						{state.type === "success" ? (
 							<div className="p-3 text-sm text-green-700 bg-green-100 rounded-lg">
 								<p className="font-medium">Transfer Completed</p>
 							</div>
@@ -182,15 +180,15 @@ export function ReceiveFile() {
 							<div className="space-y-2">
 								<div className="flex justify-between text-sm">
 									<span>
-										{activeTransfer.status === "inprogress"
+										{state.transfer.status === "inprogress"
 											? "Downloading..."
 											: "Preparing..."}
 									</span>
 									<span>
-										{activeTransfer.file_size > 0
+										{state.transfer.file_size > 0
 											? Math.round(
-													(activeTransfer.bytes_transferred /
-														activeTransfer.file_size) *
+													(state.transfer.bytes_transferred /
+														state.transfer.file_size) *
 														100,
 												)
 											: 0}
@@ -199,9 +197,9 @@ export function ReceiveFile() {
 								</div>
 								<Progress
 									value={
-										activeTransfer.file_size > 0
-											? (activeTransfer.bytes_transferred /
-													activeTransfer.file_size) *
+										state.transfer.file_size > 0
+											? (state.transfer.bytes_transferred /
+													state.transfer.file_size) *
 												100
 											: 0
 									}
@@ -209,11 +207,10 @@ export function ReceiveFile() {
 							</div>
 						)}
 
-						{(activeTransfer.status === "completed" ||
-							activeTransfer.status === "failed") && (
+						{state.type === "success" && (
 							<Button
 								variant="outline"
-								onClick={() => setActiveTransfer(null)}
+								onClick={() => dispatch({ type: "RESET" })}
 								className="w-full"
 							>
 								Receive Another File
@@ -222,9 +219,9 @@ export function ReceiveFile() {
 					</div>
 				)}
 
-				{error && (
+				{state.type === "error" && (
 					<div className="p-3 text-sm text-destructive bg-destructive/10 rounded-lg">
-						{error}
+						{state.error}
 					</div>
 				)}
 			</CardContent>
