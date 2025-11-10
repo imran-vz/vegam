@@ -1,19 +1,15 @@
-// Placeholder for local network discovery
-// Will be enhanced with mDNS in future iteration
-// pub async fn start_local_discovery(_endpoint: &Endpoint) -> Result<()> {
-//     info!("Local discovery starting (mDNS not yet implemented)");
-//     // TODO: Implement mDNS service discovery
-//     // This will broadcast presence and discover peers on LAN
-//     Ok(())
-// }
+// Local network discovery
+//
+// Iroh 0.20+ includes built-in local network discovery via swarm-discovery
+// (similar to mDNS). It's enabled by default in Endpoint::builder().bind()
+//
+// This allows dialing peers by NodeID on local networks without internet access.
+// Peers on the same LAN are automatically discovered and can connect directly.
+//
+// No additional setup required - just call endpoint.connect(node_addr) and
+// Iroh will use local discovery + relay servers + direct addresses automatically.
 
-// pub async fn discover_peer_by_ticket(_endpoint: &Endpoint, _ticket: &str) -> Result<()> {
-//     info!("Discovering peer from ticket");
-//     // Iroh handles peer discovery automatically when connecting via ticket
-//     Ok(())
-// }
-
-// Get device hostname for friendly peer naming
+/// Get device hostname for friendly peer naming
 pub fn get_device_name() -> String {
     hostname::get()
         .ok()
