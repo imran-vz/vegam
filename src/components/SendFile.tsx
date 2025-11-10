@@ -1,7 +1,9 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { debug } from "@tauri-apps/plugin-log";
 import { Check, Copy, File, Loader2 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { useReducer, useState } from "react";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -80,9 +82,9 @@ export function SendFile() {
 						className="w-full"
 					>
 						{isLoading ? (
-							<Loader2 className="h-4 w-4 animate-spin" />
+							<Loader2 className="size-4 animate-spin" />
 						) : (
-							<File className="h-4 w-4" />
+							<File className="size-4" />
 						)}
 
 						{getButtonText()}
@@ -116,12 +118,16 @@ export function SendFile() {
 									onClick={handleCopyTicket}
 								>
 									{copied ? (
-										<Check className="h-4 w-4" />
+										<Check className="size-4" />
 									) : (
-										<Copy className="h-4 w-4" />
+										<Copy className="size-4" />
 									)}
 								</Button>
 							</div>
+						</div>
+
+						<div className="flex justify-center p-4 bg-white rounded-lg">
+							<QRCodeSVG value={state.data.ticket} size={200} level="M" />
 						</div>
 
 						<Button

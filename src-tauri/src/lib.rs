@@ -5,40 +5,86 @@ mod state;
 use iroh::transfer::BlobTicketInfo;
 use state::{AppState, PeerInfo, TransferDirection, TransferInfo, TransferStatus};
 use std::path::PathBuf;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_log::{log, Target, TargetKind};
 use tracing::info;
 
 #[tauri::command]
-async fn init_node(state: State<'_, AppState>) -> Result<String, String> {
-    info!("Initializing Iroh node");
+async fn init_node(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
+    info!("Initializing Iroh node with gossip protocol");
 
-    let endpoint = iroh::node::initialize_endpoint()
+    // Get data directory for persistent blob store
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("Failed to get data directory: {}", e))?
+        .join("iroh");
+
+    // Initialize Iroh with Router, Blobs, and Gossip
+    let iroh = crate::iroh::Iroh::new(data_dir.clone())
         .await
-        .map_err(|e| format!("Failed to initialize node: {}", e))?;
+        .map_err(|e| format!("Failed to initialize Iroh: {}", e))?;
 
-    let node_id = iroh::node::get_node_id(&endpoint);
+    let node_id = iroh.node_addr.id.to_string();
 
-    // Create blob store
-    let blob_store = iroh_blobs::store::mem::MemStore::new();
+    // Extract gossip receiver and sender for peer discovery
+    let receiver = iroh
+        .gossip
+        .take_receiver()
+        .await
+        .map_err(|e| format!("Failed to get gossip receiver: {}", e))?;
 
-    // Start blob provider to serve blobs to peers
-    iroh::transfer::start_blob_provider(endpoint.clone(), blob_store.clone());
+    let sender = iroh.gossip.get_sender().await;
 
-    state.set_endpoint(endpoint).await;
-    state.set_blob_store(blob_store).await;
+    // Spawn peer discovery task
+    iroh::discovery::spawn_discovery_task(receiver, sender, node_id.clone(), app.clone());
+
+    // Store iroh instance in state
+    state.set_iroh(iroh).await;
+
+    // Initialize debug instance if in debug mode
+    #[cfg(debug_assertions)]
+    {
+        let debug_dir = data_dir.with_file_name("iroh-debug");
+        let iroh_debug = crate::iroh::Iroh::new(debug_dir)
+            .await
+            .map_err(|e| format!("Failed to initialize debug Iroh: {}", e))?;
+
+        let debug_receiver = iroh_debug
+            .gossip
+            .take_receiver()
+            .await
+            .map_err(|e| format!("Failed to get debug gossip receiver: {}", e))?;
+
+        let debug_sender = iroh_debug.gossip.get_sender().await;
+        let debug_node_id = iroh_debug.node_addr.id.to_string();
+
+        iroh::discovery::spawn_discovery_task(
+            debug_receiver,
+            debug_sender,
+            debug_node_id,
+            app.clone(),
+        );
+
+        state.set_iroh_debug(iroh_debug).await;
+    }
+
+    info!(
+        "Iroh node initialized successfully with node_id: {}",
+        node_id
+    );
 
     Ok(node_id)
 }
 
 #[tauri::command]
 async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
-    let endpoint = state
-        .get_endpoint()
+    let iroh = state
+        .get_iroh()
         .await
         .map_err(|e| format!("Node not initialized: {}", e))?;
 
-    Ok(iroh::node::get_node_id(&endpoint))
+    Ok(iroh.node_addr.id.to_string())
 }
 
 #[tauri::command]
@@ -49,109 +95,35 @@ async fn send_file(
 ) -> Result<BlobTicketInfo, String> {
     info!("Sending file: {}", file_path);
 
-    let endpoint = state
-        .get_endpoint()
+    let iroh = state
+        .get_iroh()
         .await
         .map_err(|e| format!("Node not initialized: {}", e))?;
 
-    let blob_store = state
-        .get_blob_store()
+    // Read file using platform-specific handler (handles Android content URIs)
+    let file_data = platform::read_file(&app, &file_path)
         .await
-        .map_err(|e| format!("Blob store not initialized: {}", e))?;
+        .map_err(|e| format!("Failed to read file: {}", e))?;
 
-    // Extract filename for early tracking
-    let file_name = std::path::PathBuf::from(&file_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("file")
-        .to_string();
+    let ticket_info = iroh::transfer::create_send_ticket(&iroh, file_data, file_path)
+        .await
+        .map_err(|e| format!("Failed to create ticket: {}", e))?;
 
-    let transfer_id = uuid::Uuid::new_v4().to_string();
-
-    // Create pending transfer
-    let pending_transfer = TransferInfo {
-        id: transfer_id.clone(),
-        file_name: file_name.clone(),
-        file_size: 0,
-        bytes_transferred: 0,
-        status: TransferStatus::Pending,
+    // Add transfer to state
+    let transfer = TransferInfo {
+        id: ticket_info.transfer_id.clone(),
+        file_name: ticket_info.file_name.clone(),
+        file_size: ticket_info.file_size,
+        bytes_transferred: ticket_info.file_size, // Already "transferred" since we read it
+        status: TransferStatus::Completed,
         error: None,
         direction: TransferDirection::Send,
+        speed_bps: 0,
     };
-    state.add_transfer(pending_transfer.clone()).await;
-    let _ = app.emit("transfer-update", &pending_transfer);
+    state.add_transfer(transfer.clone()).await;
 
-    // Read file using platform-specific handler (handles Android content URIs)
-    let file_data = match platform::read_file(&app, &file_path).await {
-        Ok(data) => {
-            // Update to in-progress after successful read
-            state
-                .update_transfer_status(&transfer_id, TransferStatus::InProgress, None)
-                .await;
-            data
-        }
-        Err(e) => {
-            let error_msg = format!("Failed to read file: {}", e);
-            state
-                .update_transfer_status(
-                    &transfer_id,
-                    TransferStatus::Failed,
-                    Some(error_msg.clone()),
-                )
-                .await;
-            if let Some(failed_transfer) = state.get_transfer(&transfer_id).await {
-                let _ = app.emit("transfer-update", &failed_transfer);
-            }
-            return Err(error_msg);
-        }
-    };
-
-    let ticket_info = match iroh::transfer::create_send_ticket_from_bytes(
-        &endpoint,
-        &blob_store,
-        file_data,
-        file_path,
-    )
-    .await
-    {
-        Ok(info) => {
-            // Update status to completed
-            state
-                .update_transfer_status(&transfer_id, TransferStatus::Completed, None)
-                .await;
-
-            // Update with final file size and bytes transferred
-            let file_size = info.file_size;
-            state
-                .update_transfer_progress(&transfer_id, file_size)
-                .await;
-
-            // Get updated transfer and emit
-            if let Some(completed_transfer) = state.get_transfer(&transfer_id).await {
-                let _ = app.emit("transfer-update", &completed_transfer);
-            }
-
-            // Return with our transfer_id
-            BlobTicketInfo {
-                transfer_id,
-                ..info
-            }
-        }
-        Err(e) => {
-            let error_msg = format!("Failed to create ticket: {}", e);
-            state
-                .update_transfer_status(
-                    &transfer_id,
-                    TransferStatus::Failed,
-                    Some(error_msg.clone()),
-                )
-                .await;
-            if let Some(failed_transfer) = state.get_transfer(&transfer_id).await {
-                let _ = app.emit("transfer-update", &failed_transfer);
-            }
-            return Err(error_msg);
-        }
-    };
+    // Emit event
+    let _ = app.emit("transfer-update", &transfer);
 
     Ok(ticket_info)
 }
@@ -165,106 +137,139 @@ async fn receive_file(
 ) -> Result<TransferInfo, String> {
     info!("Receiving file to: {}", output_path);
 
-    let endpoint = state
-        .get_endpoint()
+    let iroh = state
+        .get_iroh()
         .await
         .map_err(|e| format!("Node not initialized: {}", e))?;
 
-    let blob_store = state
-        .get_blob_store()
-        .await
-        .map_err(|e| format!("Blob store not initialized: {}", e))?;
+    // Resolve to absolute path (handles relative paths from dialog)
+    let path = if PathBuf::from(&output_path).is_absolute() {
+        PathBuf::from(&output_path)
+    } else {
+        // Resolve relative to home directory for Downloads/ paths
+        app.path()
+            .resolve(&output_path, tauri::path::BaseDirectory::Home)
+            .map_err(|e| format!("Failed to resolve path: {}", e))?
+    };
 
-    let path = PathBuf::from(&output_path);
+    // Get node ID for ticket decryption
+    let node_id = iroh.node_addr.id.to_string();
 
-    // Parse ticket to get metadata for initial tracking
-    let (filename, file_size, _) = iroh::transfer::parse_enhanced_ticket(&ticket)
-        .map_err(|e| format!("Failed to parse ticket: {}", e))?;
+    // Parse and decrypt ticket to get file info for initial transfer
+    let (filename, file_size, _) = iroh::transfer::parse_enhanced_ticket(&ticket, &node_id)
+        .map_err(|e| format!("Invalid ticket: {}", e))?;
 
+    let file_name = if filename != "received_file" {
+        filename
+    } else {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    };
+
+    // Generate transfer ID and create initial transfer info
     let transfer_id = uuid::Uuid::new_v4().to_string();
-
-    // Create pending transfer
-    let pending_transfer = TransferInfo {
+    let initial_transfer = TransferInfo {
         id: transfer_id.clone(),
-        file_name: filename.clone(),
+        file_name: file_name.clone(),
         file_size,
         bytes_transferred: 0,
         status: TransferStatus::Pending,
         error: None,
         direction: TransferDirection::Receive,
+        speed_bps: 0,
     };
-    state.add_transfer(pending_transfer.clone()).await;
-    let _ = app.emit("transfer-update", &pending_transfer);
 
-    // Create progress callback using state tracking
+    // Add to state and emit initial event
+    state.add_transfer(initial_transfer.clone()).await;
+    let _ = app.emit("transfer-update", &initial_transfer);
+
+    // Clone necessary data before spawning to avoid lifetime issues
+    let iroh_clone = iroh.clone();
     let transfers_arc = state.transfers.clone();
+
+    // Spawn background task for download
     let app_clone = app.clone();
+    let ticket_clone = ticket.clone();
     let transfer_id_clone = transfer_id.clone();
-    let progress_callback = move |_: String, bytes_transferred: u64, _total_bytes: u64| {
-        let transfers = transfers_arc.clone();
-        let app_ref = app_clone.clone();
-        let tid = transfer_id_clone.clone();
-        tokio::spawn(async move {
-            // Update progress directly
-            let mut transfers_guard = transfers.write().await;
-            if let Some(transfer) = transfers_guard.get_mut(&tid) {
-                transfer.bytes_transferred = bytes_transferred;
-                if bytes_transferred > 0 && transfer.status == TransferStatus::Pending {
-                    transfer.status = TransferStatus::InProgress;
-                }
-                let updated = transfer.clone();
-                drop(transfers_guard); // Release lock before emitting
-                let _ = app_ref.emit("transfer-progress", &updated);
+    let transfer_id_progress = transfer_id.clone();
+    let file_name_clone = file_name.clone();
+    let file_name_progress = file_name.clone();
+
+    tokio::spawn(async move {
+        // Create progress callback with 100ms throttling and speed tracking
+        let app_progress = app_clone.clone();
+        let last_emit = std::sync::Arc::new(std::sync::Mutex::new((
+            std::time::Instant::now(),
+            0u64, // last bytes transferred
+        )));
+
+        let progress_callback = move |_: String, bytes_transferred: u64, total_bytes: u64| {
+            let mut last = last_emit.lock().unwrap();
+            let now = std::time::Instant::now();
+
+            // Only emit if 100ms has passed since last emit
+            if now.duration_since(last.0).as_millis() >= 250 {
+                let elapsed_secs = now.duration_since(last.0).as_secs_f64();
+                let bytes_delta = bytes_transferred.saturating_sub(last.1);
+                let speed_bps = if elapsed_secs > 0.0 {
+                    (bytes_delta as f64 / elapsed_secs) as u64
+                } else {
+                    0
+                };
+
+                *last = (now, bytes_transferred);
+
+                let progress = TransferInfo {
+                    id: transfer_id_progress.clone(),
+                    file_name: file_name_progress.clone(),
+                    file_size: total_bytes,
+                    bytes_transferred,
+                    status: TransferStatus::InProgress,
+                    error: None,
+                    direction: TransferDirection::Receive,
+                    speed_bps,
+                };
+                let _ = app_progress.emit("transfer-progress", &progress);
             }
-        });
-    };
+        };
 
-    // Update status to in-progress before starting download
-    state
-        .update_transfer_status(&transfer_id, TransferStatus::InProgress, None)
-        .await;
-    if let Some(in_progress_transfer) = state.get_transfer(&transfer_id).await {
-        let _ = app.emit("transfer-update", &in_progress_transfer);
-    }
+        // Attempt download
+        let result =
+            iroh::transfer::receive_file(&iroh_clone, ticket_clone, path, progress_callback).await;
 
-    // Attempt download
-    let result =
-        iroh::transfer::receive_file(&endpoint, &blob_store, ticket, path, progress_callback).await;
-
-    match result {
-        Ok(mut transfer) => {
-            // Use our transfer_id and update final status
-            transfer.id = transfer_id.clone();
-            state
-                .update_transfer_status(&transfer_id, TransferStatus::Completed, None)
-                .await;
-            state
-                .update_transfer_progress(&transfer_id, transfer.file_size)
-                .await;
-
-            // Get updated transfer from state to ensure consistency
-            if let Some(final_transfer) = state.get_transfer(&transfer_id).await {
-                let _ = app.emit("transfer-update", &final_transfer);
-                Ok(final_transfer)
-            } else {
-                Ok(transfer)
+        // Update final state based on result
+        match result {
+            Ok(mut transfer) => {
+                // Use the original transfer_id
+                transfer.id = transfer_id_clone.clone();
+                let mut transfers = transfers_arc.write().await;
+                transfers.insert(transfer.id.clone(), transfer.clone());
+                drop(transfers);
+                let _ = app_clone.emit("transfer-update", &transfer);
+            }
+            Err(e) => {
+                let error_transfer = TransferInfo {
+                    id: transfer_id_clone.clone(),
+                    file_name: file_name_clone.clone(),
+                    file_size,
+                    bytes_transferred: 0,
+                    status: TransferStatus::Failed,
+                    error: Some(e.to_string()),
+                    direction: TransferDirection::Receive,
+                    speed_bps: 0,
+                };
+                let mut transfers = transfers_arc.write().await;
+                transfers.insert(error_transfer.id.clone(), error_transfer.clone());
+                drop(transfers);
+                let _ = app_clone.emit("transfer-update", &error_transfer);
             }
         }
-        Err(e) => {
-            let error_msg = format!("Failed to receive file: {}", e);
-            state
-                .update_transfer_status(
-                    &transfer_id,
-                    TransferStatus::Failed,
-                    Some(error_msg.clone()),
-                )
-                .await;
-            if let Some(failed_transfer) = state.get_transfer(&transfer_id).await {
-                let _ = app.emit("transfer-update", &failed_transfer);
-            }
-            Err(error_msg)
-        }
-    }
+    });
+
+    // Return immediately with pending transfer info
+    Ok(initial_transfer)
 }
 
 #[tauri::command]
@@ -292,8 +297,17 @@ struct TicketMetadata {
 }
 
 #[tauri::command]
-fn parse_ticket_metadata(ticket: String) -> Result<TicketMetadata, String> {
-    let (filename, size, _) = iroh::transfer::parse_enhanced_ticket(&ticket)
+async fn parse_ticket_metadata(
+    state: State<'_, AppState>,
+    ticket: String,
+) -> Result<TicketMetadata, String> {
+    let iroh = state
+        .get_iroh()
+        .await
+        .map_err(|e| format!("Node not initialized: {}", e))?;
+
+    let node_id = iroh.node_addr.id.to_string();
+    let (filename, size, _) = iroh::transfer::parse_enhanced_ticket(&ticket, &node_id)
         .map_err(|e| format!("Failed to parse ticket: {}", e))?;
     Ok(TicketMetadata { filename, size })
 }
@@ -306,13 +320,13 @@ struct RelayStatus {
 
 #[tauri::command]
 async fn get_relay_status(state: State<'_, AppState>) -> Result<RelayStatus, String> {
-    let endpoint = state
-        .get_endpoint()
+    info!("Getting relay status");
+    let iroh = state
+        .get_iroh()
         .await
         .map_err(|e| format!("Node not initialized: {}", e))?;
 
-    let addr = endpoint.addr();
-    let relay_url = addr.relay_urls().next();
+    let relay_url = iroh.node_addr.relay_urls().next();
     Ok(RelayStatus {
         connected: relay_url.is_some(),
         relay_url: relay_url.map(|u| u.to_string()),
@@ -325,6 +339,7 @@ pub fn run() {
 
     #[cfg(target_os = "android")]
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_barcode_scanner::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -332,6 +347,10 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Debug)
+                .filter(|metadata| {
+                    metadata.target().starts_with("vegam_lib")
+                        || metadata.level() <= log::Level::Error
+                })
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::LogDir { file_name: None }),
@@ -347,11 +366,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_log::Builder::new()
-                .level(log::LevelFilter::Debug)
+                .level(log::LevelFilter::Info)
+                .filter(|metadata| {
+                    metadata.target().starts_with("vegam_lib")
+                        || metadata.level() <= log::Level::Error
+                })
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::LogDir { file_name: None }),
-                    Target::new(TargetKind::Webview),
                 ])
                 .build(),
         );

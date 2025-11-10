@@ -9,6 +9,7 @@ export interface TransferInfo {
 	status: "pending" | "inprogress" | "completed" | "failed" | "cancelled";
 	error: string | null;
 	direction: "send" | "receive";
+	speed_bps: number;
 }
 
 export interface PeerInfo {

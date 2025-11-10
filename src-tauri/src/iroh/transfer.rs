@@ -1,14 +1,12 @@
 use anyhow::Result;
-use bytes::Bytes;
-use iroh::endpoint::Endpoint;
-use iroh_blobs::store::mem::MemStore;
 use iroh_blobs::ticket::BlobTicket;
 use iroh_blobs::BlobFormat;
-use iroh_io;
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::info;
 use uuid::Uuid;
 
+use crate::iroh::ticket_codec::{decrypt_ticket, encrypt_ticket};
+use crate::iroh::Iroh;
 use crate::state::{TransferDirection, TransferInfo, TransferStatus};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -20,9 +18,8 @@ pub struct BlobTicketInfo {
 }
 
 /// Add file bytes to blob store and create transfer ticket
-pub async fn create_send_ticket_from_bytes(
-    endpoint: &Endpoint,
-    db: &MemStore,
+pub async fn create_send_ticket(
+    iroh: &Iroh,
     file_data: Vec<u8>,
     file_path: String,
 ) -> Result<BlobTicketInfo> {
@@ -40,25 +37,22 @@ pub async fn create_send_ticket_from_bytes(
         .unwrap_or("file")
         .to_string();
 
-    // Import bytes into blob store
-    let result = db.add_bytes(file_data).await?;
-    let hash = result.hash;
+    // Import bytes into blob store using Blobs API
+    let tag_info = iroh.blobs.add_bytes(file_data).await?;
+    let hash = tag_info.hash;
 
-    info!("File imported with hash: {:?}", hash);
+    info!("File imported with hash: {}", hash);
 
     // Create ticket with node address info
-    let addr = crate::iroh::node::get_node_addr(endpoint);
+    let addr = iroh.node_addr.clone();
 
-    info!("Creating ticket with endpoint addr: {}", addr.id);
+    info!("Creating ticket with node addr: {}", addr.id);
     info!(
         "Relay URLs in ticket: {:?}",
         addr.relay_urls().collect::<Vec<_>>()
     );
-    info!(
-        "Direct addresses in ticket: {:?}",
-        addr.ip_addrs().collect::<Vec<_>>()
-    );
 
+    // BlobTicket now takes EndpointAddr directly
     let ticket = BlobTicket::new(addr, hash, BlobFormat::Raw);
     let ticket_str = ticket.to_string();
 
@@ -67,8 +61,12 @@ pub async fn create_send_ticket_from_bytes(
     // Encode filename and size in ticket format: filename|size|blob_ticket
     let enhanced_ticket = format!("{}|{}|{}", file_name, file_size, ticket_str);
 
+    // Encrypt the ticket using AES-256-GCM with node ID as key derivation
+    let node_id = iroh.node_addr.id.to_string();
+    let encrypted_ticket = encrypt_ticket(&enhanced_ticket, &node_id)?;
+
     Ok(BlobTicketInfo {
-        ticket: enhanced_ticket,
+        ticket: encrypted_ticket,
         file_name,
         file_size,
         transfer_id,
@@ -77,8 +75,12 @@ pub async fn create_send_ticket_from_bytes(
 
 /// Parse enhanced ticket format: filename|size|blob_ticket
 /// Returns (filename, size, BlobTicket)
-pub fn parse_enhanced_ticket(ticket_str: &str) -> Result<(String, u64, BlobTicket)> {
-    let parts: Vec<&str> = ticket_str.splitn(3, '|').collect();
+/// Decrypts the ticket using AES-256-GCM with the receiver's node ID
+pub fn parse_enhanced_ticket(ticket_str: &str, node_id: &str) -> Result<(String, u64, BlobTicket)> {
+    // Decrypt the ticket using the receiver's node ID
+    let decrypted = decrypt_ticket(ticket_str, node_id)?;
+
+    let parts: Vec<&str> = decrypted.splitn(3, '|').collect();
 
     if parts.len() == 3 {
         // Enhanced format with metadata
@@ -87,57 +89,18 @@ pub fn parse_enhanced_ticket(ticket_str: &str) -> Result<(String, u64, BlobTicke
         let ticket: BlobTicket = parts[2].parse()?;
         Ok((filename, size, ticket))
     } else {
-        // Legacy format without metadata
-        let ticket: BlobTicket = ticket_str.parse()?;
+        // Legacy format without metadata (shouldn't happen with encryption)
+        let ticket: BlobTicket = decrypted.parse()?;
         Ok(("received_file".to_string(), 0, ticket))
     }
 }
 
-/// Parse a ticket string and extract metadata
-pub fn parse_ticket(ticket_str: &str) -> Result<BlobTicket> {
-    let (_filename, _size, ticket) = parse_enhanced_ticket(ticket_str)?;
-    Ok(ticket)
-}
-
-/// Start blob provider to serve blobs to peers
-pub fn start_blob_provider(endpoint: Endpoint, store: MemStore) {
-    tokio::spawn(async move {
-        info!("Starting blob provider");
-        loop {
-            match endpoint.accept().await {
-                Some(incoming) => {
-                    let store = store.clone();
-                    tokio::spawn(async move {
-                        match incoming.accept() {
-                            Ok(connecting) => match connecting.await {
-                                Ok(connection) => {
-                                    info!("Accepted connection from peer");
-                                    iroh_blobs::provider::handle_connection(
-                                        connection,
-                                        store.into(),
-                                        Default::default(),
-                                    )
-                                    .await;
-                                }
-                                Err(e) => error!("Failed to await connection: {}", e),
-                            },
-                            Err(e) => error!("Failed to accept connection: {}", e),
-                        }
-                    });
-                }
-                None => {
-                    info!("Endpoint closed");
-                    break;
-                }
-            }
-        }
-    });
-}
+// Blob provider is now handled automatically by the Router pattern
+// No need for manual start_blob_provider function
 
 /// Download a file from a ticket with proper streaming
 pub async fn receive_file<F>(
-    endpoint: &Endpoint,
-    db: &MemStore,
+    iroh: &Iroh,
     ticket_str: String,
     output_path: PathBuf,
     progress_callback: F,
@@ -145,10 +108,16 @@ pub async fn receive_file<F>(
 where
     F: Fn(String, u64, u64) + Send + 'static,
 {
+    use iroh_blobs::api::downloader::DownloadProgressItem;
+    use n0_future::StreamExt;
+
     info!("Receiving file from ticket");
 
-    // Parse ticket
-    let ticket = parse_ticket(&ticket_str)?;
+    // Get receiver's node ID for decryption
+    let receiver_node_id = iroh.node_addr.id.to_string();
+
+    // Parse and decrypt the ticket to get file size
+    let (_filename, file_size, ticket) = parse_enhanced_ticket(&ticket_str, &receiver_node_id)?;
     let hash = ticket.hash();
     let sender_addr = ticket.addr().clone();
 
@@ -159,117 +128,64 @@ where
         .unwrap_or("unknown")
         .to_string();
 
-    info!("Connecting to sender: {}", sender_addr.id);
-    info!(
-        "Sender relays: {:?}",
-        sender_addr.relay_urls().collect::<Vec<_>>()
-    );
-    info!(
-        "Sender direct addresses: {:?}",
-        sender_addr.ip_addrs().collect::<Vec<_>>()
-    );
+    info!("Downloading from sender: {}", sender_addr.id);
+    info!("Sender relay: {:?}", sender_addr.relay_urls().next());
     info!("Requesting hash: {}", hash);
 
-    // Connect to sender
-    let connection = endpoint
-        .connect(sender_addr, iroh_blobs::protocol::ALPN)
-        .await
-        .map_err(|e| {
-            error!("Failed to connect to sender: {}", e);
-            anyhow::anyhow!("Failed to connect to sender. Ensure both devices can reach the relay server or are on the same network. Error: {}", e)
-        })?;
-
-    // Download blob directly
-    let request = iroh_blobs::protocol::GetRequest::blob(hash);
-    let counters = iroh_blobs::get::fsm::RequestCounters::default();
-    let at_initial = iroh_blobs::get::fsm::start(connection, request, counters);
-    let at_connected = at_initial.next().await?;
-    let connected_next = at_connected.next().await?;
-
-    let at_start_root = match connected_next {
-        iroh_blobs::get::fsm::ConnectedNext::StartRoot(s) => s,
-        iroh_blobs::get::fsm::ConnectedNext::StartChild(_) => {
-            anyhow::bail!("Unexpected child response");
-        }
-        iroh_blobs::get::fsm::ConnectedNext::Closing(_) => {
-            anyhow::bail!("Connection closed unexpectedly");
-        }
-    };
-
-    let at_blob_header = at_start_root.next();
-    let (at_blob_content, _hash) = at_blob_header.next().await?;
-
-    // Create file and write blob data with progress tracking
-    let output_path_clone = output_path.clone();
-    let file = iroh_io::File::create(move || std::fs::File::create(output_path_clone)).await?;
-
-    // Manually create ProgressSliceWriter with 2-arg closure for AsyncSliceWriter compat
-    let transfer_id_clone = transfer_id.clone();
-
-    struct ProgressWrapper<W, F> {
-        writer: W,
-        callback: F,
+    // Emit initial progress (0, file_size) if file size is known
+    if file_size > 0 {
+        progress_callback(transfer_id.clone(), 0, file_size);
     }
 
-    impl<W: iroh_io::AsyncSliceWriter, F: FnMut(u64, usize)> iroh_io::AsyncSliceWriter
-        for ProgressWrapper<W, F>
-    {
-        async fn write_bytes_at(&mut self, offset: u64, data: Bytes) -> std::io::Result<()> {
-            (self.callback)(offset, data.len());
-            self.writer.write_bytes_at(offset, data).await
-        }
+    // Download blob using downloader API with progress tracking
+    let download = iroh.downloader.download(hash, Some(sender_addr.id));
+    let mut stream = download.stream().await?;
 
-        async fn write_at(&mut self, offset: u64, data: &[u8]) -> std::io::Result<()> {
-            (self.callback)(offset, data.len());
-            self.writer.write_at(offset, data).await
-        }
+    // Track bytes downloaded during network transfer
+    let mut bytes_downloaded: u64 = 0;
 
-        async fn sync(&mut self) -> std::io::Result<()> {
-            self.writer.sync().await
-        }
-
-        async fn set_len(&mut self, size: u64) -> std::io::Result<()> {
-            self.writer.set_len(size).await
+    // Iterate through progress events
+    while let Some(item) = stream.next().await {
+        match item {
+            DownloadProgressItem::Progress(bytes) => {
+                bytes_downloaded = bytes;
+                // Report download progress
+                let total = if file_size > 0 {
+                    file_size
+                } else {
+                    bytes_downloaded
+                };
+                progress_callback(transfer_id.clone(), bytes_downloaded, total);
+            }
+            DownloadProgressItem::Error(e) => {
+                return Err(e);
+            }
+            _ => {}
         }
     }
 
-    let tracked_file = ProgressWrapper {
-        writer: file,
-        callback: move |offset, _len| {
-            progress_callback(transfer_id_clone.clone(), offset, 0);
-        },
-    };
+    info!("Download complete, {} bytes received", bytes_downloaded);
 
-    let _at_end = at_blob_content.write_all(tracked_file).await?;
+    // Now blob is in store, read it and write to file
+    let mut reader = iroh.blobs.reader(hash);
+    let mut file_data = Vec::new();
+    tokio::io::copy(&mut reader, &mut file_data).await?;
+    tokio::fs::write(&output_path, &file_data).await?;
 
-    info!("Download complete, verifying file size");
+    let actual_file_size = file_data.len() as u64;
+    info!("File written to disk, {} bytes", actual_file_size);
 
-    // Get file size from the written file
-    let file_size = tokio::fs::metadata(&output_path).await?.len();
-    info!("File size: {} bytes", file_size);
-
-    // Also store in blob store for future reference
-    use iroh_blobs::api::blobs::BlobStatus;
-    let status = db.status(hash).await?;
-    match status {
-        BlobStatus::NotFound => {
-            info!("Blob not in store, importing...");
-            // Read file back and import - ensures consistency
-            let data = tokio::fs::read(&output_path).await?;
-            db.add_bytes(data).await?;
-        }
-        _ => {
-            info!("Blob already in store");
-        }
-    }
+    // Call progress callback with final status
+    progress_callback(transfer_id.clone(), actual_file_size, actual_file_size);
 
     Ok(TransferInfo {
         id: transfer_id,
         file_name,
-        file_size,
-        bytes_transferred: file_size,
+        file_size: actual_file_size,
+        bytes_transferred: actual_file_size,
         status: TransferStatus::Completed,
         error: None,
         direction: TransferDirection::Receive,
+        speed_bps: 0,
     })
 }

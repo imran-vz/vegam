@@ -1,9 +1,9 @@
-import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { debug } from "@tauri-apps/plugin-log";
 import { Download, Loader2 } from "lucide-react";
-import { useEffect, useReducer } from "react";
+import { useEffect, useReducer, useState } from "react";
 
+import { QRScanner } from "@/components/QRScanner";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -13,33 +13,65 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { parseTicketMetadata, receiveFile, type TransferInfo } from "@/lib/api";
+import {
+	listenToTransferProgress,
+	listenToTransferUpdates,
+	parseTicketMetadata,
+	receiveFile,
+} from "@/lib/api";
 import { receiveFileReducer } from "@/lib/state-machines";
-import { formatFileSize, parseError } from "@/lib/utils";
+import { formatFileSize, formatTransferSpeed, parseError } from "@/lib/utils";
 
 export function ReceiveFile() {
 	const [state, dispatch] = useReducer(receiveFileReducer, {
 		type: "idle",
 		ticket: "",
 	});
+	const [showScanner, setShowScanner] = useState(false);
 
-	// Listen for transfer progress updates
+	// Listen for transfer progress and completion updates
 	useEffect(() => {
-		const unlisten = listen<TransferInfo>("transfer-progress", (event) => {
-			const progress = event.payload;
+		const unlistenProgress = listenToTransferProgress((progress) => {
 			if (state.type === "downloading" && progress.id === state.transfer.id) {
+				console.log({ progress });
+				// Backend already throttles to 100ms, no need for frontend throttling
 				dispatch({
 					type: "PROGRESS_UPDATE",
 					bytesTransferred: progress.bytes_transferred,
 					fileSize: progress.file_size,
+					speed_bps: progress.speed_bps,
 				});
 			}
 		});
 
+		const unlistenUpdate = listenToTransferUpdates((transfer) => {
+			if (state.type === "downloading" && transfer.id === state.transfer.id) {
+				if (transfer.status === "completed") {
+					dispatch({ type: "DOWNLOAD_COMPLETED", transfer });
+				} else if (transfer.status === "failed") {
+					dispatch({
+						type: "ERROR",
+						error: transfer.error || "Transfer failed",
+					});
+				}
+			}
+		});
+
 		return () => {
-			unlisten.then((fn) => fn());
+			unlistenProgress.then((fn) => fn());
+			unlistenUpdate.then((fn) => fn());
 		};
 	}, [state]);
+
+	// Auto-reset after successful download
+	useEffect(() => {
+		if (state.type === "success") {
+			const timer = setTimeout(() => {
+				dispatch({ type: "RESET" });
+			}, 1500);
+			return () => clearTimeout(timer);
+		}
+	}, [state.type]);
 
 	const handlePaste = async () => {
 		try {
@@ -50,6 +82,11 @@ export function ReceiveFile() {
 		} catch (err) {
 			dispatch({ type: "ERROR", error: parseError(err) });
 		}
+	};
+
+	const handleQRScan = (ticket: string) => {
+		dispatch({ type: "SET_TICKET", ticket: ticket.trim() });
+		setShowScanner(false);
 	};
 
 	const handleReceive = async () => {
@@ -86,14 +123,11 @@ export function ReceiveFile() {
 			debug(`selectedPath: ${selectedPath}`);
 			dispatch({ type: "PATH_SELECTED", path: selectedPath });
 
-			// Start receiving immediately
+			// Start receiving immediately - this returns instantly with pending status
 			const transfer = await receiveFile(ticket, selectedPath);
 			dispatch({ type: "DOWNLOAD_STARTED", transfer });
 
-			// Auto-reset after completion
-			setTimeout(() => {
-				dispatch({ type: "RESET" });
-			}, 1500);
+			// Completion will be handled by transfer-update event listener
 		} catch (err) {
 			dispatch({ type: "ERROR", error: parseError(err) });
 		}
@@ -137,15 +171,32 @@ export function ReceiveFile() {
 								placeholder="Paste transfer ticket here..."
 								className="w-full h-24 p-3 text-sm font-mono border rounded-lg resize-none"
 							/>
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={handlePaste}
-								className="w-full"
-							>
-								Paste from Clipboard
-							</Button>
+							<div className="grid grid-cols-2 gap-2">
+								<Button
+									variant="outline"
+									size="sm"
+									onClick={handlePaste}
+									className="w-full"
+								>
+									Paste from Clipboard
+								</Button>
+								<Button
+									variant="outline"
+									size="sm"
+									onClick={() => setShowScanner(!showScanner)}
+									className="w-full"
+								>
+									{showScanner ? "Hide Scanner" : "Scan QR Code"}
+								</Button>
+							</div>
 						</div>
+
+						{showScanner && (
+							<QRScanner
+								onScan={handleQRScan}
+								onError={(err) => dispatch({ type: "ERROR", error: err })}
+							/>
+						)}
 
 						<Button
 							onClick={handleReceive}
@@ -155,9 +206,9 @@ export function ReceiveFile() {
 							className="w-full"
 						>
 							{isLoading ? (
-								<Loader2 className="mr-2 h-4 w-4 animate-spin" />
+								<Loader2 className="size-4 animate-spin" />
 							) : (
-								<Download className="mr-2 h-4 w-4" />
+								<Download className="size-4" />
 							)}
 
 							{getButtonText()}
@@ -182,7 +233,7 @@ export function ReceiveFile() {
 									<span>
 										{state.transfer.status === "inprogress"
 											? "Downloading..."
-											: "Preparing..."}
+											: "Downloaded"}
 									</span>
 									<span>
 										{state.transfer.file_size > 0
@@ -204,6 +255,11 @@ export function ReceiveFile() {
 											: 0
 									}
 								/>
+								{["pending", "inprogress"].includes(state.transfer.status) && (
+									<div className="text-xs text-muted-foreground text-right">
+										{formatTransferSpeed(state.transfer.speed_bps)}
+									</div>
+								)}
 							</div>
 						)}
 

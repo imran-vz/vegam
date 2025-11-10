@@ -1,10 +1,11 @@
 use anyhow::Result;
-use iroh::endpoint::Endpoint;
-use iroh_blobs::store::mem::MemStore;
+use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use crate::iroh::Iroh;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransferInfo {
@@ -15,6 +16,8 @@ pub struct TransferInfo {
     pub status: TransferStatus,
     pub error: Option<String>,
     pub direction: TransferDirection,
+    #[serde(default)]
+    pub speed_bps: u64, // bytes per second
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -42,8 +45,11 @@ pub struct PeerInfo {
 }
 
 pub struct AppState {
-    pub endpoint: Arc<RwLock<Option<Endpoint>>>,
-    pub blob_store: Arc<RwLock<Option<MemStore>>>,
+    pub iroh: Arc<RwLock<Option<Iroh>>>,
+    #[cfg(debug_assertions)]
+    pub iroh_debug: Arc<RwLock<Option<Iroh>>>,
+    #[allow(dead_code)] // Reserved for future blob tracking
+    pub blob_hashes: Arc<RwLock<HashMap<Hash, Vec<u8>>>>,
     pub transfers: Arc<RwLock<HashMap<String, TransferInfo>>>,
     pub peers: Arc<RwLock<HashMap<String, PeerInfo>>>,
 }
@@ -51,34 +57,44 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            endpoint: Arc::new(RwLock::new(None)),
-            blob_store: Arc::new(RwLock::new(None)),
+            iroh: Arc::new(RwLock::new(None)),
+            #[cfg(debug_assertions)]
+            iroh_debug: Arc::new(RwLock::new(None)),
+            blob_hashes: Arc::new(RwLock::new(HashMap::new())),
             transfers: Arc::new(RwLock::new(HashMap::new())),
             peers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub async fn set_blob_store(&self, store: MemStore) {
-        let mut s = self.blob_store.write().await;
-        *s = Some(store);
+    pub async fn set_iroh(&self, iroh: Iroh) {
+        let mut i = self.iroh.write().await;
+        *i = Some(iroh);
     }
 
-    pub async fn get_blob_store(&self) -> Result<MemStore> {
-        let store = self.blob_store.read().await;
-        store
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Blob store not initialized"))
+    #[cfg(debug_assertions)]
+    pub async fn set_iroh_debug(&self, iroh: Iroh) {
+        let mut i = self.iroh_debug.write().await;
+        *i = Some(iroh);
     }
 
-    pub async fn set_endpoint(&self, endpoint: Endpoint) {
-        let mut ep = self.endpoint.write().await;
-        *ep = Some(endpoint);
-    }
-
-    pub async fn get_endpoint(&self) -> Result<Endpoint> {
-        let ep = self.endpoint.read().await;
-        ep.clone()
+    pub async fn get_iroh(&self) -> Result<Iroh> {
+        let iroh = self.iroh.read().await;
+        iroh.clone()
             .ok_or_else(|| anyhow::anyhow!("Iroh node not initialized"))
+    }
+
+    #[cfg(debug_assertions)]
+    pub async fn get_iroh_debug(&self) -> Result<Iroh> {
+        let iroh = self.iroh_debug.read().await;
+        iroh.clone()
+            .ok_or_else(|| anyhow::anyhow!("Iroh debug node not initialized"))
+    }
+
+    // Reserved for future blob tracking functionality
+    #[allow(dead_code)]
+    pub async fn add_blob(&self, hash: Hash, data: Vec<u8>) {
+        let mut blobs = self.blob_hashes.write().await;
+        blobs.insert(hash, data);
     }
 
     pub async fn add_transfer(&self, transfer: TransferInfo) {
@@ -86,6 +102,8 @@ impl AppState {
         transfers.insert(transfer.id.clone(), transfer);
     }
 
+    // Reserved for future transfer progress tracking
+    #[allow(dead_code)]
     pub async fn update_transfer_progress(&self, id: &str, bytes_transferred: u64) {
         let mut transfers = self.transfers.write().await;
         if let Some(transfer) = transfers.get_mut(id) {
@@ -96,6 +114,8 @@ impl AppState {
         }
     }
 
+    // Reserved for future transfer status updates
+    #[allow(dead_code)]
     pub async fn update_transfer_status(
         &self,
         id: &str,
@@ -114,14 +134,19 @@ impl AppState {
         transfers.get(id).cloned()
     }
 
-    // pub async fn add_peer(&self, peer: PeerInfo) {
-    //     let mut peers = self.peers.write().await;
-    //     peers.insert(peer.node_id.clone(), peer);
-    // }
-
     pub async fn get_peers(&self) -> Vec<PeerInfo> {
         let peers = self.peers.read().await;
         peers.values().cloned().collect()
+    }
+
+    pub async fn add_peer(&self, peer: PeerInfo) {
+        let mut peers = self.peers.write().await;
+        peers.insert(peer.node_id.clone(), peer);
+    }
+
+    pub async fn remove_peer(&self, node_id: &str) {
+        let mut peers = self.peers.write().await;
+        peers.remove(node_id);
     }
 }
 

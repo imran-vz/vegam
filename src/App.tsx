@@ -4,7 +4,12 @@ import { useEffect, useState } from "react";
 import { ReceiveFile } from "@/components/ReceiveFile";
 import { SendFile } from "@/components/SendFile";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getDeviceName, getRelayStatus, initNode, type RelayStatus } from "@/lib/api";
+import {
+	getDeviceName,
+	getRelayStatus,
+	initNode,
+	type RelayStatus,
+} from "@/lib/api";
 
 function App() {
 	const [nodeId, setNodeId] = useState<string | null>(null);
@@ -13,6 +18,7 @@ function App() {
 	const [isInitializing, setIsInitializing] = useState(true);
 
 	useEffect(() => {
+		console.log("Initializing app");
 		const initialize = async () => {
 			try {
 				debug("Initializing node");
@@ -21,7 +27,6 @@ function App() {
 
 				const name = await getDeviceName();
 				setDeviceName(name);
-
 				const status = await getRelayStatus();
 				setRelayStatus(status);
 			} catch (error) {
@@ -38,7 +43,7 @@ function App() {
 		return (
 			<div className="flex items-center justify-center min-h-screen bg-background">
 				<div className="text-center space-y-2">
-					<div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" />
+					<div className="animate-spin size-8 border-4 border-primary border-t-transparent rounded-full mx-auto" />
 					<p className="text-sm text-muted-foreground">Initializing...</p>
 				</div>
 			</div>
@@ -60,24 +65,13 @@ function App() {
 				{deviceName && (
 					<div className="flex items-center justify-center gap-4">
 						<div className="flex items-center gap-2 text-xs md:text-sm text-muted-foreground">
-							<Wifi className="h-3 w-3 md:h-4 md:w-4" />
+							{relayStatus?.connected ? (
+								<Wifi className="size-4 text-green-600" />
+							) : (
+								<WifiOff className="size-4 text-amber-600" />
+							)}
 							<span>{deviceName}</span>
 						</div>
-						{relayStatus && (
-							<div className="flex items-center gap-2 text-xs text-muted-foreground">
-								{relayStatus.connected ? (
-									<>
-										<Wifi className="h-3 w-3 text-green-600" />
-										<span>Relay</span>
-									</>
-								) : (
-									<>
-										<WifiOff className="h-3 w-3 text-amber-600" />
-										<span>Direct only</span>
-									</>
-								)}
-							</div>
-						)}
 					</div>
 				)}
 

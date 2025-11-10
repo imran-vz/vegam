@@ -81,7 +81,12 @@ export type ReceiveFileEvent =
 	| { type: "PATH_SELECTED"; path: string }
 	| { type: "PATH_SELECTION_CANCELLED" }
 	| { type: "DOWNLOAD_STARTED"; transfer: TransferInfo }
-	| { type: "PROGRESS_UPDATE"; bytesTransferred: number; fileSize: number }
+	| {
+			type: "PROGRESS_UPDATE";
+			bytesTransferred: number;
+			fileSize: number;
+			speed_bps: number;
+	  }
 	| { type: "DOWNLOAD_COMPLETED"; transfer: TransferInfo }
 	| { type: "ERROR"; error: string }
 	| { type: "RESET" };
@@ -142,6 +147,7 @@ export function receiveFileReducer(
 						...state.transfer,
 						bytes_transferred: event.bytesTransferred,
 						file_size: event.fileSize || state.transfer.file_size,
+						speed_bps: event.speed_bps,
 					},
 				};
 			}
