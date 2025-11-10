@@ -1,11 +1,10 @@
 use anyhow::Result;
 use bytes::Bytes;
-use iroh::base::ticket::BlobTicket;
-use iroh::blobs::store::Store;
-use iroh::blobs::BlobFormat;
-use iroh::net::endpoint::Endpoint;
-use iroh_blobs::store::Map;
-use iroh_blobs::util::local_pool::LocalPool;
+use iroh::endpoint::Endpoint;
+use iroh_blobs::store::mem::MemStore;
+use iroh_blobs::ticket::BlobTicket;
+use iroh_blobs::BlobFormat;
+use iroh_io;
 use std::path::PathBuf;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -23,7 +22,7 @@ pub struct BlobTicketInfo {
 /// Add file bytes to blob store and create transfer ticket
 pub async fn create_send_ticket_from_bytes(
     endpoint: &Endpoint,
-    db: &iroh_blobs::store::mem::Store,
+    db: &MemStore,
     file_data: Vec<u8>,
     file_path: String,
 ) -> Result<BlobTicketInfo> {
@@ -42,21 +41,25 @@ pub async fn create_send_ticket_from_bytes(
         .to_string();
 
     // Import bytes into blob store
-    let hash = db.import_bytes(file_data.into(), BlobFormat::Raw).await?;
+    let result = db.add_bytes(file_data).await?;
+    let hash = result.hash;
 
     info!("File imported with hash: {:?}", hash);
 
     // Create ticket with node address info
     let addr = crate::iroh::node::get_node_addr(endpoint);
 
-    info!("Creating ticket with node addr: {}", addr.node_id);
-    info!("Relay URL in ticket: {:?}", addr.relay_url());
+    info!("Creating ticket with endpoint addr: {}", addr.id);
+    info!(
+        "Relay URLs in ticket: {:?}",
+        addr.relay_urls().collect::<Vec<_>>()
+    );
     info!(
         "Direct addresses in ticket: {:?}",
-        addr.direct_addresses().collect::<Vec<_>>()
+        addr.ip_addrs().collect::<Vec<_>>()
     );
 
-    let ticket = BlobTicket::new(addr, *hash.hash(), BlobFormat::Raw)?;
+    let ticket = BlobTicket::new(addr, hash, BlobFormat::Raw);
     let ticket_str = ticket.to_string();
 
     let transfer_id = Uuid::new_v4().to_string();
@@ -97,16 +100,13 @@ pub fn parse_ticket(ticket_str: &str) -> Result<BlobTicket> {
 }
 
 /// Start blob provider to serve blobs to peers
-pub fn start_blob_provider(endpoint: Endpoint, store: iroh_blobs::store::mem::Store) {
+pub fn start_blob_provider(endpoint: Endpoint, store: MemStore) {
     tokio::spawn(async move {
         info!("Starting blob provider");
-        let pool = LocalPool::single();
-        let rt = pool.handle();
         loop {
             match endpoint.accept().await {
                 Some(incoming) => {
                     let store = store.clone();
-                    let rt = rt.clone();
                     tokio::spawn(async move {
                         match incoming.accept() {
                             Ok(connecting) => match connecting.await {
@@ -114,9 +114,8 @@ pub fn start_blob_provider(endpoint: Endpoint, store: iroh_blobs::store::mem::St
                                     info!("Accepted connection from peer");
                                     iroh_blobs::provider::handle_connection(
                                         connection,
-                                        store,
+                                        store.into(),
                                         Default::default(),
-                                        rt,
                                     )
                                     .await;
                                 }
@@ -138,7 +137,7 @@ pub fn start_blob_provider(endpoint: Endpoint, store: iroh_blobs::store::mem::St
 /// Download a file from a ticket with proper streaming
 pub async fn receive_file<F>(
     endpoint: &Endpoint,
-    db: &iroh_blobs::store::mem::Store,
+    db: &MemStore,
     ticket_str: String,
     output_path: PathBuf,
     progress_callback: F,
@@ -151,7 +150,7 @@ where
     // Parse ticket
     let ticket = parse_ticket(&ticket_str)?;
     let hash = ticket.hash();
-    let sender_addr = ticket.node_addr().clone();
+    let sender_addr = ticket.addr().clone();
 
     let transfer_id = Uuid::new_v4().to_string();
     let file_name = output_path
@@ -160,11 +159,14 @@ where
         .unwrap_or("unknown")
         .to_string();
 
-    info!("Connecting to sender: {}", sender_addr.node_id);
-    info!("Sender relay: {:?}", sender_addr.relay_url());
+    info!("Connecting to sender: {}", sender_addr.id);
+    info!(
+        "Sender relays: {:?}",
+        sender_addr.relay_urls().collect::<Vec<_>>()
+    );
     info!(
         "Sender direct addresses: {:?}",
-        sender_addr.direct_addresses().collect::<Vec<_>>()
+        sender_addr.ip_addrs().collect::<Vec<_>>()
     );
     info!("Requesting hash: {}", hash);
 
@@ -178,8 +180,9 @@ where
         })?;
 
     // Download blob directly
-    let request = iroh_blobs::protocol::GetRequest::single(hash);
-    let at_initial = iroh_blobs::get::fsm::start(connection, request);
+    let request = iroh_blobs::protocol::GetRequest::blob(hash);
+    let counters = iroh_blobs::get::fsm::RequestCounters::default();
+    let at_initial = iroh_blobs::get::fsm::start(connection, request, counters);
     let at_connected = at_initial.next().await?;
     let connected_next = at_connected.next().await?;
 
@@ -246,13 +249,18 @@ where
     info!("File size: {} bytes", file_size);
 
     // Also store in blob store for future reference
-    let entry = db.get(&hash).await?;
-    if entry.is_none() {
-        info!("Blob not in store, importing...");
-        // Read file back and import - ensures consistency
-        let data = tokio::fs::read(&output_path).await?;
-        db.import_bytes(data.into(), iroh::blobs::BlobFormat::Raw)
-            .await?;
+    use iroh_blobs::api::blobs::BlobStatus;
+    let status = db.status(hash).await?;
+    match status {
+        BlobStatus::NotFound => {
+            info!("Blob not in store, importing...");
+            // Read file back and import - ensures consistency
+            let data = tokio::fs::read(&output_path).await?;
+            db.add_bytes(data).await?;
+        }
+        _ => {
+            info!("Blob already in store");
+        }
     }
 
     Ok(TransferInfo {

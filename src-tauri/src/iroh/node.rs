@@ -1,6 +1,6 @@
 use anyhow::Result;
-use iroh::net::endpoint::{Endpoint, NodeAddr};
-use iroh::net::relay::RelayMode;
+use iroh::endpoint::{Endpoint, RelayMode};
+use iroh::EndpointAddr;
 use tracing::info;
 
 pub async fn initialize_endpoint() -> Result<Endpoint> {
@@ -14,18 +14,18 @@ pub async fn initialize_endpoint() -> Result<Endpoint> {
         .bind()
         .await?;
 
-    let node_id = endpoint.node_id();
-    let bound = endpoint.bound_sockets();
-    let local_addrs = vec![bound.0];
+    let endpoint_id = endpoint.id();
+    let bound_sockets = endpoint.bound_sockets();
 
     info!("Iroh node initialized");
-    info!("Node ID: {}", node_id);
-    info!("Local addresses: {:?}", local_addrs);
+    info!("Endpoint ID: {}", endpoint_id);
+    info!("Bound sockets: {:?}", bound_sockets);
 
     // Wait for relay connection with timeout
     let mut relay_connected = false;
     for attempt in 1..=10 {
-        if let Some(relay) = endpoint.home_relay() {
+        let addr = endpoint.addr();
+        if let Some(relay) = addr.relay_urls().next() {
             info!("Home relay connected: {}", relay);
             relay_connected = true;
             break;
@@ -36,27 +36,34 @@ pub async fn initialize_endpoint() -> Result<Endpoint> {
 
     if !relay_connected {
         info!("Warning: No relay server connected after 5 seconds. Direct connections only.");
-        info!("Current home relay: {:?}", endpoint.home_relay());
+        let addr = endpoint.addr();
+        info!(
+            "Current relays: {:?}",
+            addr.relay_urls().collect::<Vec<_>>()
+        );
     }
 
     Ok(endpoint)
 }
 
-pub fn get_node_addr(endpoint: &Endpoint) -> NodeAddr {
-    let node_id = endpoint.node_id();
-    let relay_url = endpoint.home_relay();
-    let bound = endpoint.bound_sockets();
-    let direct_addresses = vec![bound.0];
+pub fn get_node_addr(endpoint: &Endpoint) -> EndpointAddr {
+    let endpoint_id = endpoint.id();
+    let mut addr = EndpointAddr::new(endpoint_id);
 
-    let mut addr = NodeAddr::new(node_id);
-
-    if let Some(relay) = relay_url {
-        addr = addr.with_relay_url(relay);
+    // Add relays from current endpoint address
+    let endpoint_addr = endpoint.addr();
+    for relay in endpoint_addr.relay_urls() {
+        addr = addr.with_relay_url(relay.clone());
     }
 
-    addr.with_direct_addresses(direct_addresses)
+    // Add bound socket addresses
+    for socket_addr in endpoint.bound_sockets() {
+        addr = addr.with_ip_addr(socket_addr);
+    }
+
+    addr
 }
 
 pub fn get_node_id(endpoint: &Endpoint) -> String {
-    endpoint.node_id().to_string()
+    endpoint.id().to_string()
 }

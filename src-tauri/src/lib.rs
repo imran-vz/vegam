@@ -20,7 +20,7 @@ async fn init_node(state: State<'_, AppState>) -> Result<String, String> {
     let node_id = iroh::node::get_node_id(&endpoint);
 
     // Create blob store
-    let blob_store = iroh_blobs::store::mem::Store::new();
+    let blob_store = iroh_blobs::store::mem::MemStore::new();
 
     // Start blob provider to serve blobs to peers
     iroh::transfer::start_blob_provider(endpoint.clone(), blob_store.clone());
@@ -180,7 +180,8 @@ async fn get_relay_status(state: State<'_, AppState>) -> Result<RelayStatus, Str
         .await
         .map_err(|e| format!("Node not initialized: {}", e))?;
 
-    let relay_url = endpoint.home_relay();
+    let addr = endpoint.addr();
+    let relay_url = addr.relay_urls().next();
     Ok(RelayStatus {
         connected: relay_url.is_some(),
         relay_url: relay_url.map(|u| u.to_string()),

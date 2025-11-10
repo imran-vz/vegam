@@ -1,6 +1,7 @@
 use anyhow::Result;
-use iroh::blobs::Hash;
-use iroh::net::endpoint::Endpoint;
+use iroh::endpoint::Endpoint;
+use iroh_blobs::store::mem::MemStore;
+use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,7 +44,7 @@ pub struct PeerInfo {
 
 pub struct AppState {
     pub endpoint: Arc<RwLock<Option<Endpoint>>>,
-    pub blob_store: Arc<RwLock<Option<iroh_blobs::store::mem::Store>>>,
+    pub blob_store: Arc<RwLock<Option<MemStore>>>,
     pub blob_hashes: Arc<RwLock<HashMap<Hash, Vec<u8>>>>, // Track blobs we're serving
     pub transfers: Arc<RwLock<HashMap<String, TransferInfo>>>,
     pub peers: Arc<RwLock<HashMap<String, PeerInfo>>>,
@@ -60,12 +61,12 @@ impl AppState {
         }
     }
 
-    pub async fn set_blob_store(&self, store: iroh_blobs::store::mem::Store) {
+    pub async fn set_blob_store(&self, store: MemStore) {
         let mut s = self.blob_store.write().await;
         *s = Some(store);
     }
 
-    pub async fn get_blob_store(&self) -> Result<iroh_blobs::store::mem::Store> {
+    pub async fn get_blob_store(&self) -> Result<MemStore> {
         let store = self.blob_store.read().await;
         store
             .clone()
