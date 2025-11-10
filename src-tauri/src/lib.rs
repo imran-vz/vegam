@@ -59,30 +59,99 @@ async fn send_file(
         .await
         .map_err(|e| format!("Blob store not initialized: {}", e))?;
 
-    // Read file using platform-specific handler (handles Android content URIs)
-    let file_data = platform::read_file(&app, &file_path)
-        .await
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    // Extract filename for early tracking
+    let file_name = std::path::PathBuf::from(&file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
 
-    let ticket_info =
-        iroh::transfer::create_send_ticket_from_bytes(&endpoint, &blob_store, file_data, file_path)
-            .await
-            .map_err(|e| format!("Failed to create ticket: {}", e))?;
+    let transfer_id = uuid::Uuid::new_v4().to_string();
 
-    // Add transfer to state
-    let transfer = TransferInfo {
-        id: ticket_info.transfer_id.clone(),
-        file_name: ticket_info.file_name.clone(),
-        file_size: ticket_info.file_size,
-        bytes_transferred: ticket_info.file_size, // Already "transferred" since we read it
-        status: TransferStatus::Completed,
+    // Create pending transfer
+    let pending_transfer = TransferInfo {
+        id: transfer_id.clone(),
+        file_name: file_name.clone(),
+        file_size: 0,
+        bytes_transferred: 0,
+        status: TransferStatus::Pending,
         error: None,
         direction: TransferDirection::Send,
     };
-    state.add_transfer(transfer.clone()).await;
+    state.add_transfer(pending_transfer.clone()).await;
+    let _ = app.emit("transfer-update", &pending_transfer);
 
-    // Emit event
-    let _ = app.emit("transfer-update", &transfer);
+    // Read file using platform-specific handler (handles Android content URIs)
+    let file_data = match platform::read_file(&app, &file_path).await {
+        Ok(data) => {
+            // Update to in-progress after successful read
+            state
+                .update_transfer_status(&transfer_id, TransferStatus::InProgress, None)
+                .await;
+            data
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to read file: {}", e);
+            state
+                .update_transfer_status(
+                    &transfer_id,
+                    TransferStatus::Failed,
+                    Some(error_msg.clone()),
+                )
+                .await;
+            if let Some(failed_transfer) = state.get_transfer(&transfer_id).await {
+                let _ = app.emit("transfer-update", &failed_transfer);
+            }
+            return Err(error_msg);
+        }
+    };
+
+    let ticket_info = match iroh::transfer::create_send_ticket_from_bytes(
+        &endpoint,
+        &blob_store,
+        file_data,
+        file_path,
+    )
+    .await
+    {
+        Ok(info) => {
+            // Update status to completed
+            state
+                .update_transfer_status(&transfer_id, TransferStatus::Completed, None)
+                .await;
+
+            // Update with final file size and bytes transferred
+            let file_size = info.file_size;
+            state
+                .update_transfer_progress(&transfer_id, file_size)
+                .await;
+
+            // Get updated transfer and emit
+            if let Some(completed_transfer) = state.get_transfer(&transfer_id).await {
+                let _ = app.emit("transfer-update", &completed_transfer);
+            }
+
+            // Return with our transfer_id
+            BlobTicketInfo {
+                transfer_id,
+                ..info
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to create ticket: {}", e);
+            state
+                .update_transfer_status(
+                    &transfer_id,
+                    TransferStatus::Failed,
+                    Some(error_msg.clone()),
+                )
+                .await;
+            if let Some(failed_transfer) = state.get_transfer(&transfer_id).await {
+                let _ = app.emit("transfer-update", &failed_transfer);
+            }
+            return Err(error_msg);
+        }
+    };
 
     Ok(ticket_info)
 }
@@ -108,32 +177,94 @@ async fn receive_file(
 
     let path = PathBuf::from(&output_path);
 
-    // Create progress callback
+    // Parse ticket to get metadata for initial tracking
+    let (filename, file_size, _) = iroh::transfer::parse_enhanced_ticket(&ticket)
+        .map_err(|e| format!("Failed to parse ticket: {}", e))?;
+
+    let transfer_id = uuid::Uuid::new_v4().to_string();
+
+    // Create pending transfer
+    let pending_transfer = TransferInfo {
+        id: transfer_id.clone(),
+        file_name: filename.clone(),
+        file_size,
+        bytes_transferred: 0,
+        status: TransferStatus::Pending,
+        error: None,
+        direction: TransferDirection::Receive,
+    };
+    state.add_transfer(pending_transfer.clone()).await;
+    let _ = app.emit("transfer-update", &pending_transfer);
+
+    // Create progress callback using state tracking
+    let transfers_arc = state.transfers.clone();
     let app_clone = app.clone();
-    let progress_callback = move |transfer_id: String, bytes_transferred: u64, total_bytes: u64| {
-        let progress = TransferInfo {
-            id: transfer_id.clone(),
-            file_name: String::new(), // Will be set in final transfer
-            file_size: total_bytes,
-            bytes_transferred,
-            status: TransferStatus::InProgress,
-            error: None,
-            direction: TransferDirection::Receive,
-        };
-        let _ = app_clone.emit("transfer-progress", &progress);
+    let transfer_id_clone = transfer_id.clone();
+    let progress_callback = move |_: String, bytes_transferred: u64, _total_bytes: u64| {
+        let transfers = transfers_arc.clone();
+        let app_ref = app_clone.clone();
+        let tid = transfer_id_clone.clone();
+        tokio::spawn(async move {
+            // Update progress directly
+            let mut transfers_guard = transfers.write().await;
+            if let Some(transfer) = transfers_guard.get_mut(&tid) {
+                transfer.bytes_transferred = bytes_transferred;
+                if bytes_transferred > 0 && transfer.status == TransferStatus::Pending {
+                    transfer.status = TransferStatus::InProgress;
+                }
+                let updated = transfer.clone();
+                drop(transfers_guard); // Release lock before emitting
+                let _ = app_ref.emit("transfer-progress", &updated);
+            }
+        });
     };
 
+    // Update status to in-progress before starting download
+    state
+        .update_transfer_status(&transfer_id, TransferStatus::InProgress, None)
+        .await;
+    if let Some(in_progress_transfer) = state.get_transfer(&transfer_id).await {
+        let _ = app.emit("transfer-update", &in_progress_transfer);
+    }
+
     // Attempt download
-    let transfer =
-        iroh::transfer::receive_file(&endpoint, &blob_store, ticket, path, progress_callback)
-            .await
-            .map_err(|e| format!("Failed to receive file: {}", e))?;
+    let result =
+        iroh::transfer::receive_file(&endpoint, &blob_store, ticket, path, progress_callback).await;
 
-    // Add to state and emit event
-    state.add_transfer(transfer.clone()).await;
-    let _ = app.emit("transfer-update", &transfer);
+    match result {
+        Ok(mut transfer) => {
+            // Use our transfer_id and update final status
+            transfer.id = transfer_id.clone();
+            state
+                .update_transfer_status(&transfer_id, TransferStatus::Completed, None)
+                .await;
+            state
+                .update_transfer_progress(&transfer_id, transfer.file_size)
+                .await;
 
-    Ok(transfer)
+            // Get updated transfer from state to ensure consistency
+            if let Some(final_transfer) = state.get_transfer(&transfer_id).await {
+                let _ = app.emit("transfer-update", &final_transfer);
+                Ok(final_transfer)
+            } else {
+                Ok(transfer)
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to receive file: {}", e);
+            state
+                .update_transfer_status(
+                    &transfer_id,
+                    TransferStatus::Failed,
+                    Some(error_msg.clone()),
+                )
+                .await;
+            if let Some(failed_transfer) = state.get_transfer(&transfer_id).await {
+                let _ = app.emit("transfer-update", &failed_transfer);
+            }
+            Err(error_msg)
+        }
+    }
 }
 
 #[tauri::command]
