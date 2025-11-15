@@ -153,6 +153,14 @@ async fn send_file(
         .await
         .map_err(|e| format!("Failed to create ticket: {}", e))?;
 
+    // Store tag to keep blob alive in MemStore until transfer completes
+    if let Some(tag) = ticket_info.tag.clone() {
+        state.add_blob_tag(tag.hash, tag.clone()).await;
+        info!("✓ Tag stored in AppState for hash: {} - blob protected from GC", tag.hash);
+    } else {
+        info!("⚠ Warning: No tag returned from create_send_ticket");
+    }
+
     // Add final completed transfer to state
     let transfer = TransferInfo {
         id: transfer_id.clone(),
@@ -169,12 +177,13 @@ async fn send_file(
     // Emit completed event
     let _ = app.emit("transfer-update", &transfer);
 
-    // Return ticket info with transfer ID
+    // Return ticket info with transfer ID (without tag in JSON)
     Ok(BlobTicketInfo {
         ticket: ticket_info.ticket,
         file_name: ticket_info.file_name,
         file_size: ticket_info.file_size,
         transfer_id,
+        tag: None, // Don't serialize tag to frontend
     })
 }
 

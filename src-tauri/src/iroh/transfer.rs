@@ -1,4 +1,5 @@
 use anyhow::Result;
+use iroh_blobs::api::tags::TagInfo;
 use iroh_blobs::ticket::BlobTicket;
 use iroh_blobs::BlobFormat;
 use std::path::PathBuf;
@@ -9,12 +10,16 @@ use crate::iroh::ticket_codec::{decrypt_ticket, encrypt_ticket};
 use crate::iroh::Iroh;
 use crate::state::{TransferDirection, TransferInfo, TransferStatus};
 
+use std::sync::Arc;
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BlobTicketInfo {
     pub ticket: String,
     pub file_name: String,
     pub file_size: u64,
     pub transfer_id: String,
+    #[serde(skip)]
+    pub tag: Option<Arc<TagInfo>>,
 }
 
 /// Add file bytes to blob store and create transfer ticket
@@ -38,10 +43,11 @@ pub async fn create_send_ticket(
         .to_string();
 
     // Import bytes into blob store using Blobs API
-    let tag_info = iroh.blobs.add_bytes(file_data).await?;
-    let hash = tag_info.hash;
+    let tag = iroh.blobs.add_bytes(file_data).await?;
+    let hash = tag.hash;
 
     info!("File imported with hash: {}", hash);
+    info!("Tag created - blob will stay alive while tag exists");
 
     // Create ticket with node address info
     let addr = iroh.node_addr.clone();
@@ -70,6 +76,7 @@ pub async fn create_send_ticket(
         file_name,
         file_size,
         transfer_id,
+        tag: Some(Arc::new(tag)), // Keep tag alive
     })
 }
 
@@ -131,6 +138,7 @@ where
     info!("Downloading from sender: {}", sender_addr.id);
     info!("Sender relay: {:?}", sender_addr.relay_urls().next());
     info!("Requesting hash: {}", hash);
+    info!("Starting download from remote peer...");
 
     // Emit initial progress (0, file_size) if file size is known
     if file_size > 0 {
@@ -158,13 +166,19 @@ where
                 progress_callback(transfer_id.clone(), bytes_downloaded, total);
             }
             DownloadProgressItem::Error(e) => {
+                log::error!("✗ Download error: {}", e);
+                log::error!("  This likely means sender doesn't have blob available");
+                log::error!("  Ensure sender has updated APK with tag storage fix");
                 return Err(e);
             }
             _ => {}
         }
     }
 
-    info!("Download complete, {} bytes received", bytes_downloaded);
+    info!(
+        "✓ Download complete, {} bytes received from network",
+        bytes_downloaded
+    );
 
     // Now blob is in store, read it and write to file
     let mut reader = iroh.blobs.reader(hash);
@@ -173,7 +187,10 @@ where
     tokio::fs::write(&output_path, &file_data).await?;
 
     let actual_file_size = file_data.len() as u64;
-    info!("File written to disk, {} bytes", actual_file_size);
+    info!(
+        "✓ File written to disk successfully, {} bytes",
+        actual_file_size
+    );
 
     // Call progress callback with final status
     progress_callback(transfer_id.clone(), actual_file_size, actual_file_size);

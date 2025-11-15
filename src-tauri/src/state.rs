@@ -1,5 +1,5 @@
 use anyhow::Result;
-use iroh_blobs::Hash;
+use iroh_blobs::{api::tags::TagInfo, Hash};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,8 +48,8 @@ pub struct AppState {
     pub iroh: Arc<RwLock<Option<Iroh>>>,
     #[cfg(debug_assertions)]
     pub iroh_debug: Arc<RwLock<Option<Iroh>>>,
-    #[allow(dead_code)] // Reserved for future blob tracking
-    pub blob_hashes: Arc<RwLock<HashMap<Hash, Vec<u8>>>>,
+    // Keep tags alive to prevent MemStore GC of blobs during transfer
+    pub blob_tags: Arc<RwLock<HashMap<Hash, Arc<TagInfo>>>>,
     pub transfers: Arc<RwLock<HashMap<String, TransferInfo>>>,
     pub peers: Arc<RwLock<HashMap<String, PeerInfo>>>,
 }
@@ -60,7 +60,7 @@ impl AppState {
             iroh: Arc::new(RwLock::new(None)),
             #[cfg(debug_assertions)]
             iroh_debug: Arc::new(RwLock::new(None)),
-            blob_hashes: Arc::new(RwLock::new(HashMap::new())),
+            blob_tags: Arc::new(RwLock::new(HashMap::new())),
             transfers: Arc::new(RwLock::new(HashMap::new())),
             peers: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -90,11 +90,17 @@ impl AppState {
             .ok_or_else(|| anyhow::anyhow!("Iroh debug node not initialized"))
     }
 
-    // Reserved for future blob tracking functionality
+    /// Store tag to keep blob alive in MemStore
+    pub async fn add_blob_tag(&self, hash: Hash, tag: Arc<TagInfo>) {
+        let mut tags = self.blob_tags.write().await;
+        tags.insert(hash, tag);
+    }
+
+    /// Remove tag to allow MemStore GC of blob
     #[allow(dead_code)]
-    pub async fn add_blob(&self, hash: Hash, data: Vec<u8>) {
-        let mut blobs = self.blob_hashes.write().await;
-        blobs.insert(hash, data);
+    pub async fn remove_blob_tag(&self, hash: &Hash) {
+        let mut tags = self.blob_tags.write().await;
+        tags.remove(hash);
     }
 
     pub async fn add_transfer(&self, transfer: TransferInfo) {
