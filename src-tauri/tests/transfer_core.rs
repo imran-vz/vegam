@@ -859,3 +859,64 @@ async fn multiple_receivers_one_ticket() {
     receiver_b.shutdown().await;
     receiver_c.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sender_cancel_terminates_receiver_without_touching_source() {
+    let dirs = TestDirs::new("sendcancel");
+    let sender = Engine::init_with_tuning(dirs.engine_dir("a"), test_tuning())
+        .await
+        .unwrap();
+    let receiver = Engine::init_with_tuning(dirs.engine_dir("b"), test_tuning())
+        .await
+        .unwrap();
+
+    let source = dirs.file("source.bin");
+    write_random_file(&source, 4 * 1024 * 1024);
+    let (send_id, ticket) = create_available_send(&sender, &source).await;
+
+    // Hold the receiver in a stall, then cancel the send (ADR 0019: stops
+    // availability, never deletes the Sender's source file).
+    vegam_lib::engine::send::pause_send_transfer(&sender, &send_id).expect("pause");
+    let dest = dirs.file("dest.bin");
+    let info = vegam_lib::engine::recv::create_receive_transfer(
+        &receiver,
+        ticket,
+        dest.to_string_lossy().to_string(),
+    )
+    .await
+    .expect("create receive");
+    assert!(
+        wait_for_receive_status(
+            &receiver,
+            &info.id,
+            ReceiveStatus::StalledRetrying,
+            Duration::from_secs(30)
+        )
+        .await
+    );
+
+    vegam_lib::engine::send::cancel_send_transfer(&sender, &send_id)
+        .await
+        .expect("cancel send");
+    {
+        let reg = sender.registry.lock().unwrap();
+        assert!(reg.sends.is_empty(), "send record not pruned on cancel");
+    }
+    assert!(source.exists(), "sender cancel must not delete the source");
+
+    // The receiver's next retry hits an unknown hash -> terminal rejection.
+    assert!(
+        wait_for_receive_status(
+            &receiver,
+            &info.id,
+            ReceiveStatus::NoLongerResumable,
+            Duration::from_secs(30)
+        )
+        .await,
+        "receiver not terminally rejected after sender cancel"
+    );
+    assert!(!dest.exists());
+
+    sender.shutdown().await;
+    receiver.shutdown().await;
+}

@@ -15,14 +15,35 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
+  # Create the draft release once, up front: three parallel tauri-action
+  # jobs otherwise race find-by-tag-then-create and can produce duplicate
+  # drafts with assets split across them.
+  create-release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ github.ref_name }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "${{ github.ref_name }}" --repo "$GITHUB_REPOSITORY" \
+              --draft --title "Vegam ${{ github.ref_name }}" --notes "Draft — artifacts uploading."
+
   build:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos-latest
-            args: --bundles dmg
+            # ADR 0023 covers Intel Macs (macOS 12+ runs on Intel), so the
+            # dmg must be a universal binary, not the runner's arm64 only.
+            args: --bundles dmg --target universal-apple-darwin
           - platform: windows-latest
             args: --bundles msi
           - platform: ubuntu-22.04
@@ -38,9 +59,9 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
             librsvg2-dev patchelf libgtk-3-dev
 
+      # No explicit version: the action reads package.json's packageManager
+      # field; specifying both (even compatible values) is a hard error.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
 
       - uses: actions/setup-node@v4
         with:
@@ -48,6 +69,8 @@ jobs:
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -78,7 +101,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           mkdir artifacts && cd artifacts
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY"
+          # Download installers only: a workflow re-run must not fold a
+          # previously published SHA256SUMS.txt into the new checksums.
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.dmg' --pattern '*.msi' --pattern '*.AppImage'
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
           gh release upload "$TAG" SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber

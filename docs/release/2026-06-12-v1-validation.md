@@ -12,13 +12,13 @@ scenarios), and local packaging runs.
 
 | Roadmap Phase 8 item | macOS | Windows | Linux | Evidence |
 | --- | --- | --- | --- | --- |
-| Transfer tests | PASS | GAP | GAP | Integration suite: 12/12 green (happy path, pause/stall/resume both sides, expiry both arms, content change, mtime-only churn, moved-file reselect, restarts, cancel, GetMany rejection, multi-receiver) |
+| Transfer tests | PASS | GAP | GAP | Integration suite: 13/13 green (happy path, pause/stall/resume both sides, expiry both arms, content change, mtime-only churn, moved-file reselect, restarts, receiver + sender cancel, GetMany rejection, multi-receiver) |
 | Direct path | PASS | GAP | GAP | All integration tests run over local direct connections; spike scenario A/F confirm Direct selection |
 | Relayed path | PARTIAL | GAP | GAP | Spike logs show live Relayed→Direct upgrades and a mid-transfer Direct→Relayed→Direct migration over the default public relays; no sustained relay-only soak test was run |
 | 100 GB / sparse equivalent | PASS | GAP | GAP | Spike scenario F: 100 GiB transferred and exported, 35 MB sender / 32 MB receiver max RSS, 1229 s |
 | App restart resume (Sender and Receiver) | PASS | GAP | GAP | Integration: receiver_restart_resumes_from_partial_state, paused_receive_survives_restart_and_resumes; spike scenario C (sender restart, persisted key keeps ticket valid) |
 | Temporary network loss resume | PASS | GAP | GAP | Spike scenario G (SIGSTOP link stall) and C (abrupt connection death), byte-exact resume |
-| Manual pause/resume/cancel | PASS | GAP | GAP | Integration: sender + receiver pause/resume tests, cancel tests; spike scenario D |
+| Manual pause/resume/cancel | PASS | GAP | GAP | Integration: sender + receiver pause/resume tests; receiver cancel (receiver_cancel_removes_record_and_partial_state) and sender cancel (sender_cancel_terminates_receiver_without_touching_source); spike scenario D |
 | Ticket expiration + started-receiver resume | PASS | GAP | GAP | Integration: expiry_rejects_new_but_admits_started_receiver; gate unit decision table incl. exact boundary |
 | Multiple Receivers per ticket | PASS | GAP | GAP | Integration: multiple_receivers_one_ticket (two receivers, one bearer ticket, both byte-identical) |
 | Sender content change / deletion / moved-file | PASS | GAP | GAP | Integration: content_change_is_terminal_after_rehash, mtime_only_touch_keeps_transfer_available, moved_file_reselect_and_continue |
@@ -65,10 +65,19 @@ scenarios), and local packaging runs.
 3. **Relay-only soak** — relayed connectivity was observed working, but no
    long transfer was forced to stay on relays.
 4. **First release-pipeline run** — the workflow is untested until the first
-   `v*` tag; expect one iteration of CI debugging.
+   `v*` tag; expect one iteration of CI debugging. The macOS job builds a
+   universal binary (`--target universal-apple-darwin`) so Intel Macs are
+   covered per ADR 0023; the locally built dmg is aarch64-only and is
+   evidence of the build path, not a releasable artifact.
 5. **`.vegampart` cross-volume rename** — export uses same-directory
    temp+rename; destinations on exotic mounts (network shares) where rename
    semantics differ have not been tested.
+6. **Quarantined-install validation** — the Gatekeeper/SmartScreen
+   instructions in RELEASING.md have not been exercised against a real
+   browser-downloaded, quarantined artifact; macOS in particular may show
+   the "damaged" dialog for unsigned downloads (the documented `xattr`
+   fallback covers it, but the actual first-run flow must be confirmed per
+   release).
 
 Per the roadmap's acceptance ("pass on supported desktop platforms or have
 documented platform-specific limitations"), Phase 8 is complete on macOS

@@ -7,8 +7,10 @@ manual downloads only (ADR 0011).
 
 ## Cutting a release
 
-1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
-   and `package.json`; commit.
+1. Bump `version` in `src-tauri/tauri.conf.json` (this drives the artifact
+   names), `src-tauri/Cargo.toml`, and `package.json`; run
+   `cd src-tauri && cargo check` so `Cargo.lock` picks up the new version;
+   commit all four files.
 2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
 3. The `release` GitHub Actions workflow builds the `.dmg`, `.msi`, and
    `.AppImage` on real macOS/Windows/Linux runners, uploads them to a
@@ -33,10 +35,19 @@ exactly. If it does not, delete the download.
 
 ## Expected install friction (unsigned builds, ADR 0012)
 
-- **macOS Gatekeeper**: opening the app the first time shows
-  ""Vegam" cannot be opened because it is from an unidentified developer".
-  Right-click (or Control-click) the app → **Open** → **Open**. On newer
-  macOS versions: System Settings → Privacy & Security → "Open Anyway".
+- **macOS Gatekeeper** (macOS 15 and newer — the common case): opening the
+  app is blocked with no override in the dialog. Open **System Settings →
+  Privacy & Security**, scroll to the security section, and click
+  **Open Anyway** next to the Vegam message, then confirm.
+  - On macOS 12–14 the older bypass also works: Control-click the app →
+    **Open** → **Open**.
+  - If macOS instead reports *"Vegam" is damaged and can't be opened* (this
+    can happen for unsigned/un-notarized downloads, especially on Apple
+    Silicon), clear the quarantine flag from Terminal:
+    `xattr -cr /Applications/Vegam.app` — only after verifying the SHA-256
+    checksum above.
+  - These flows must be re-validated against a real quarantined download of
+    each release; Gatekeeper behavior shifts between macOS versions.
 - **Windows SmartScreen**: "Windows protected your PC" — click
   **More info** → **Run anyway**.
 - **Linux**: mark the AppImage executable (`chmod +x Vegam*.AppImage`) and
