@@ -1,44 +1,42 @@
-import { Wifi, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
+import { PartialDownloads } from "@/components/PartialDownloads";
 import { ReceiveFile } from "@/components/ReceiveFile";
 import { SendFile } from "@/components/SendFile";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-	getDeviceName,
-	getRelayStatus,
-	initNode,
-	type RelayStatus,
-} from "@/lib/api";
+import { type AppSnapshot, initApp } from "@/lib/api";
 
 function App() {
-	const [nodeId, setNodeId] = useState<string | null>(null);
-	const [deviceName, setDeviceName] = useState<string>("");
-	const [relayStatus, setRelayStatus] = useState<RelayStatus | null>(null);
-	const [isInitializing, setIsInitializing] = useState(true);
+	const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
+	const [initError, setInitError] = useState<string | null>(null);
 
 	useEffect(() => {
-		console.log("Initializing app");
 		const initialize = async () => {
 			try {
-				console.log("Initializing node");
-				const id = await initNode();
-				setNodeId(id);
-
-				const name = await getDeviceName();
-				setDeviceName(name);
-				const status = await getRelayStatus();
-				setRelayStatus(status);
+				const snap = await initApp();
+				setSnapshot(snap);
 			} catch (error) {
 				console.error("Failed to initialize:", error);
-			} finally {
-				setIsInitializing(false);
+				setInitError(
+					error instanceof Error ? error.message : String(error),
+				);
 			}
 		};
-
 		initialize();
 	}, []);
 
-	if (isInitializing) {
+	if (initError) {
+		return (
+			<div className="flex items-center justify-center min-h-screen bg-background">
+				<div className="text-center space-y-2 max-w-md">
+					<p className="text-sm text-destructive">
+						Failed to start: {initError}
+					</p>
+				</div>
+			</div>
+		);
+	}
+
+	if (snapshot === null) {
 		return (
 			<div className="flex items-center justify-center min-h-screen bg-background">
 				<div className="text-center space-y-2">
@@ -57,43 +55,26 @@ function App() {
 						<h1 className="text-2xl md:text-3xl font-bold">Vegam</h1>
 					</div>
 					<p className="text-xs md:text-sm text-muted-foreground">
-						P2P File Transfer
+						{snapshot.settings.display_name}
 					</p>
 				</div>
 
-				{deviceName && (
-					<div className="flex items-center justify-center gap-4">
-						<div className="flex items-center gap-2 text-xs md:text-sm text-muted-foreground">
-							{relayStatus?.connected ? (
-								<Wifi className="size-4 text-green-600" />
-							) : (
-								<WifiOff className="size-4 text-amber-600" />
-							)}
-							<span>{deviceName}</span>
-						</div>
-					</div>
-				)}
-
 				<Tabs defaultValue="send" className="w-full">
-					<TabsList className="grid w-full grid-cols-2">
+					<TabsList className="grid w-full grid-cols-3">
 						<TabsTrigger value="send">Send</TabsTrigger>
 						<TabsTrigger value="receive">Receive</TabsTrigger>
+						<TabsTrigger value="storage">Storage</TabsTrigger>
 					</TabsList>
 					<TabsContent value="send" className="mt-4 md:mt-6">
-						<SendFile />
+						<SendFile initialTransfers={snapshot.send_transfers} />
 					</TabsContent>
 					<TabsContent value="receive" className="mt-4 md:mt-6">
-						<ReceiveFile />
+						<ReceiveFile initialTransfers={snapshot.receive_transfers} />
+					</TabsContent>
+					<TabsContent value="storage" className="mt-4 md:mt-6">
+						<PartialDownloads />
 					</TabsContent>
 				</Tabs>
-
-				{nodeId && (
-					<div className="text-center pb-2">
-						<p className="text-[10px] md:text-xs text-muted-foreground font-mono">
-							Node: {nodeId.slice(0, 16)}...
-						</p>
-					</div>
-				)}
 			</div>
 		</div>
 	);

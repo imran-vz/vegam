@@ -1,9 +1,9 @@
 import { save } from "@tauri-apps/plugin-dialog";
-import { debug } from "@tauri-apps/plugin-log";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
-import { Download, Loader2 } from "lucide-react";
-import { useEffect, useReducer } from "react";
+import { Download, Loader2, Pause, Play, X } from "lucide-react";
+import { useEffect, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -14,154 +14,143 @@ import {
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
-	listenToTransferProgress,
-	listenToTransferUpdates,
-	parseTicketMetadata,
-	receiveFile,
+	cancelReceiveTransfer,
+	createReceiveTransfer,
+	inspectTicket,
+	isApiError,
+	listenToReceiveTransferProgress,
+	listenToReceiveTransferUpdates,
+	pauseReceiveTransfer,
+	type ReceiveProgress,
+	resumeReceiveTransfer,
+	type ReceiveTransferInfo,
 } from "@/lib/api";
-import { receiveFileReducer } from "@/lib/state-machines";
 import { formatFileSize, formatTransferSpeed, parseError } from "@/lib/utils";
 
-export function ReceiveFile() {
-	const [state, dispatch] = useReducer(receiveFileReducer, {
-		type: "idle",
-		ticket: "",
-	});
+const STATUS_LABELS: Record<ReceiveTransferInfo["status"], string> = {
+	connecting: "Connecting",
+	downloading: "Downloading",
+	paused: "Paused",
+	stalledRetrying: "Waiting for sender",
+	verifying: "Verifying",
+	exporting: "Saving",
+	complete: "Completed",
+	failed: "Failed",
+	cancelled: "Cancelled",
+	noLongerResumable: "No longer available",
+};
 
-	// Listen for transfer progress and completion updates
+interface ReceiveFileProps {
+	initialTransfers: ReceiveTransferInfo[];
+}
+
+export function ReceiveFile({ initialTransfers }: ReceiveFileProps) {
+	const [ticket, setTicket] = useState("");
+	const [transfer, setTransfer] = useState<ReceiveTransferInfo | null>(
+		initialTransfers[0] ?? null,
+	);
+	const [progress, setProgress] = useState<ReceiveProgress | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
+
 	useEffect(() => {
-		const unlistenProgress = listenToTransferProgress((progress) => {
-			if (state.type === "downloading" && progress.id === state.transfer.id) {
-				console.log({ progress });
-				// Backend already throttles to 100ms, no need for frontend throttling
-				dispatch({
-					type: "PROGRESS_UPDATE",
-					bytesTransferred: progress.bytes_transferred,
-					fileSize: progress.file_size,
-					speed_bps: progress.speed_bps,
-				});
-			}
-		});
-
-		const unlistenUpdate = listenToTransferUpdates((transfer) => {
-			if (state.type === "downloading" && transfer.id === state.transfer.id) {
-				if (transfer.status === "completed") {
-					dispatch({ type: "DOWNLOAD_COMPLETED", transfer });
-				} else if (transfer.status === "failed") {
-					dispatch({
-						type: "ERROR",
-						error: transfer.error || "Transfer failed",
-					});
+		const unlistenUpdate = listenToReceiveTransferUpdates((updated) => {
+			setTransfer((current) => {
+				if (current === null || current.id === updated.id) {
+					return updated.status === "cancelled" ? null : updated;
 				}
-			}
+				return current;
+			});
 		});
-
+		const unlistenProgress = listenToReceiveTransferProgress((p) => {
+			setProgress((current) => {
+				return current === null || current.id === p.id ? p : current;
+			});
+		});
 		return () => {
-			unlistenProgress.then((fn) => fn());
 			unlistenUpdate.then((fn) => fn());
+			unlistenProgress.then((fn) => fn());
 		};
-	}, [state]);
-
-	// Auto-reset after successful download
-	useEffect(() => {
-		if (state.type === "success") {
-			const timer = setTimeout(() => {
-				dispatch({ type: "RESET" });
-			}, 1500);
-			return () => clearTimeout(timer);
-		}
-	}, [state.type]);
+	}, []);
 
 	const handlePaste = async () => {
 		try {
 			const text = await readText();
 			if (text?.trim()) {
-				dispatch({ type: "SET_TICKET", ticket: text.trim() });
+				setTicket(text.trim());
 			}
 		} catch (err) {
-			dispatch({ type: "ERROR", error: parseError(err) });
+			setError(parseError(err));
 		}
 	};
 
 	const handleReceive = async () => {
-		dispatch({ type: "RECEIVE" });
-
-		if (state.type !== "idle" || !state.ticket.trim()) {
-			return;
-		}
-
-		const ticket = state.ticket;
-
+		if (!ticket.trim()) return;
+		setError(null);
+		setBusy(true);
 		try {
-			// Parse ticket to get filename
-			let defaultFilename = "received_file";
-			try {
-				const metadata = await parseTicketMetadata(ticket);
-				defaultFilename = metadata.filename;
-				dispatch({ type: "METADATA_PARSED", filename: defaultFilename });
-			} catch (e) {
-				debug(`Could not parse ticket metadata: ${e}`);
-				dispatch({ type: "METADATA_PARSE_FAILED" });
-			}
-
-			// Open save dialog with Downloads as default location and proper filename
+			const preview = await inspectTicket(ticket.trim());
 			const selectedPath = await save({
-				defaultPath: `Downloads/${defaultFilename}`,
+				defaultPath: `Downloads/${preview.file_name}`,
 			});
-
-			if (!selectedPath) {
-				dispatch({ type: "PATH_SELECTION_CANCELLED" });
-				return;
-			}
-
-			debug(`selectedPath: ${selectedPath}`);
-			dispatch({ type: "PATH_SELECTED", path: selectedPath });
-
-			// Start receiving immediately - this returns instantly with pending status
-			const transfer = await receiveFile(ticket, selectedPath);
-			dispatch({ type: "DOWNLOAD_STARTED", transfer });
-
-			// Completion will be handled by transfer-update event listener
+			if (!selectedPath) return;
+			const info = await createReceiveTransfer(ticket.trim(), selectedPath);
+			setTransfer(info);
+			setProgress(null);
+			setTicket("");
 		} catch (err) {
-			dispatch({ type: "ERROR", error: parseError(err) });
+			setError(isApiError(err) ? err.message : parseError(err));
+		} finally {
+			setBusy(false);
 		}
 	};
 
-	const isLoading =
-		state.type === "parsing_metadata" ||
-		state.type === "awaiting_path" ||
-		state.type === "downloading";
-
-	const getButtonText = () => {
-		switch (state.type) {
-			case "parsing_metadata":
-			case "awaiting_path":
-			case "downloading":
-				return "Receiving";
-			case "success":
-				return "Completed";
-			default:
-				return "Receive";
+	const withTransfer = async (
+		action: (id: string) => Promise<unknown>,
+	): Promise<void> => {
+		if (!transfer) return;
+		setError(null);
+		try {
+			await action(transfer.id);
+		} catch (err) {
+			setError(isApiError(err) ? err.message : parseError(err));
 		}
 	};
+
+	const handleCancel = async () => {
+		await withTransfer(cancelReceiveTransfer);
+		setTransfer(null);
+		setProgress(null);
+	};
+
+	const localBytes =
+		progress && transfer && progress.id === transfer.id
+			? progress.local_bytes
+			: (transfer?.local_bytes ?? 0);
+	const totalBytes = transfer?.size ?? 0;
+	const percent =
+		totalBytes > 0 ? Math.round((localBytes / totalBytes) * 100) : 0;
+	const isActive =
+		transfer !== null &&
+		["connecting", "downloading", "stalledRetrying", "verifying", "exporting"].includes(
+			transfer.status,
+		);
 
 	return (
 		<Card>
 			<CardHeader>
 				<CardTitle>Receive File</CardTitle>
 				<CardDescription>
-					Paste a transfer ticket to receive a file
+					Paste a Transfer Ticket to receive a file
 				</CardDescription>
 			</CardHeader>
 			<CardContent className="space-y-4">
-				{state.type !== "downloading" && state.type !== "success" ? (
+				{transfer === null ? (
 					<>
 						<div className="space-y-2">
 							<textarea
-								value={state.type === "idle" ? state.ticket : ""}
-								onChange={(e) =>
-									dispatch({ type: "SET_TICKET", ticket: e.target.value })
-								}
+								value={ticket}
+								onChange={(e) => setTicket(e.target.value)}
 								placeholder="Paste transfer ticket here..."
 								className="w-full h-24 p-3 text-sm font-mono border rounded-lg resize-none"
 							/>
@@ -177,84 +166,106 @@ export function ReceiveFile() {
 
 						<Button
 							onClick={handleReceive}
-							disabled={
-								isLoading || (state.type === "idle" && !state.ticket.trim())
-							}
+							disabled={busy || !ticket.trim()}
 							className="w-full"
 						>
-							{isLoading ? (
+							{busy ? (
 								<Loader2 className="size-4 animate-spin" />
 							) : (
 								<Download className="size-4" />
 							)}
-
-							{getButtonText()}
+							Receive
 						</Button>
 					</>
 				) : (
 					<div className="space-y-4">
-						<div className="p-3 bg-muted rounded-lg">
-							<p className="font-medium">{state.transfer.file_name}</p>
-							<p className="text-sm text-muted-foreground">
-								{formatFileSize(state.transfer.file_size)}
-							</p>
+						<div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+							<div>
+								<p className="font-medium">{transfer.file_name}</p>
+								<p className="text-sm text-muted-foreground">
+									{formatFileSize(transfer.size)}
+								</p>
+							</div>
+							<Badge>{STATUS_LABELS[transfer.status]}</Badge>
 						</div>
 
-						{state.type === "success" ? (
+						{transfer.status === "complete" ? (
 							<div className="p-3 text-sm text-green-700 bg-green-100 rounded-lg">
 								<p className="font-medium">Transfer Completed</p>
 							</div>
 						) : (
 							<div className="space-y-2">
 								<div className="flex justify-between text-sm">
-									<span>
-										{state.transfer.status === "inprogress"
-											? "Downloading..."
-											: "Downloaded"}
-									</span>
-									<span>
-										{state.transfer.file_size > 0
-											? Math.round(
-													(state.transfer.bytes_transferred /
-														state.transfer.file_size) *
-														100,
-												)
-											: 0}
-										%
-									</span>
+									<span>{STATUS_LABELS[transfer.status]}…</span>
+									<span>{percent}%</span>
 								</div>
-								<Progress
-									value={
-										state.transfer.file_size > 0
-											? (state.transfer.bytes_transferred /
-													state.transfer.file_size) *
-												100
-											: 0
-									}
-								/>
-								{["pending", "inprogress"].includes(state.transfer.status) && (
-									<div className="text-xs text-muted-foreground text-right">
-										{formatTransferSpeed(state.transfer.speed_bps)}
-									</div>
-								)}
+								<Progress value={percent} />
+								<div className="flex justify-between text-xs text-muted-foreground">
+									<span>
+										{transfer.connection_kind === "direct"
+											? "Direct"
+											: transfer.connection_kind === "relayed"
+												? "Relayed"
+												: ""}
+									</span>
+									{progress && progress.speed_bps > 0 && isActive && (
+										<span>{formatTransferSpeed(progress.speed_bps)}</span>
+									)}
+								</div>
 							</div>
 						)}
 
-						{state.type === "success" && (
-							<Button
-								variant="outline"
-								onClick={() => dispatch({ type: "RESET" })}
-								className="w-full"
-							>
-								Receive Another File
-							</Button>
-						)}
+						<div className="flex gap-2">
+							{isActive && (
+								<Button
+									variant="outline"
+									className="flex-1"
+									onClick={() => withTransfer(pauseReceiveTransfer)}
+								>
+									<Pause className="size-4" />
+									Pause
+								</Button>
+							)}
+							{["paused", "failed", "noLongerResumable"].includes(
+								transfer.status,
+							) && (
+								<Button
+									variant="outline"
+									className="flex-1"
+									onClick={() => withTransfer(resumeReceiveTransfer)}
+								>
+									<Play className="size-4" />
+									Resume
+								</Button>
+							)}
+							{transfer.status === "complete" ? (
+								<Button
+									variant="outline"
+									className="flex-1"
+									onClick={() => {
+										setTransfer(null);
+										setProgress(null);
+									}}
+								>
+									Receive Another File
+								</Button>
+							) : (
+								<Button
+									variant="outline"
+									className="flex-1"
+									onClick={handleCancel}
+								>
+									<X className="size-4" />
+									Cancel
+								</Button>
+							)}
+						</div>
 					</div>
 				)}
 
-				{state.type === "error" && (
+				{(error || transfer?.error) && (
 					<div className="p-3 text-sm text-destructive bg-destructive/10 rounded-lg">
-						{state.error}
+						{error ?? transfer?.error}
 					</div>
 				)}
 			</CardContent>
