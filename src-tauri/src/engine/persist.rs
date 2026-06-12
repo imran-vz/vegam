@@ -80,7 +80,21 @@ pub fn load(path: &Path) -> Result<TransfersFile> {
         });
     }
     let raw = std::fs::read_to_string(path).context("reading transfers file")?;
-    let mut file: TransfersFile = serde_json::from_str(&raw).context("parsing transfers file")?;
+    let mut file: TransfersFile = match serde_json::from_str(&raw) {
+        Ok(file) => file,
+        Err(e) => {
+            // A corrupt metadata file must not brick the app. Preserve it
+            // for inspection and start with an empty list; orphaned blobs
+            // surface in the Storage tab rather than being lost.
+            tracing::warn!("transfers file unparseable ({e}); moving it aside");
+            let aside = path.with_extension("json.corrupt");
+            let _ = std::fs::rename(path, &aside);
+            return Ok(TransfersFile {
+                schema_version: SCHEMA_VERSION,
+                ..Default::default()
+            });
+        }
+    };
     file.sends.retain(keep_send);
     file.receives.retain(keep_receive);
     Ok(file)
@@ -95,17 +109,25 @@ pub fn save(path: &Path, file: &TransfersFile) -> Result<()> {
     write_atomic(path, json.as_bytes())
 }
 
-/// Atomic write: temp file in the same directory, then rename.
+/// Atomic write: uniquely named temp file in the same directory, then
+/// rename. The unique name keeps concurrent writers from interleaving on
+/// one temp file (last rename wins, but every rename installs a complete,
+/// valid file).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let dir = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("path has no parent directory"))?;
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(
-        ".{}.tmp",
+        ".{}.{}.{}.tmp",
         path.file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "file".to_string())
+            .unwrap_or_else(|| "file".to_string()),
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed),
     ));
     std::fs::write(&tmp, bytes).context("writing temp file")?;
     std::fs::rename(&tmp, path).context("renaming temp file into place")?;

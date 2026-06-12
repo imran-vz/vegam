@@ -135,53 +135,91 @@ pub async fn create_send_transfer(
     Ok(info)
 }
 
+/// Outcome of claiming a hash for a freshly imported send transfer.
+enum HashClaim {
+    /// This transfer now owns the hash; the previous stale owner (if any)
+    /// must have its tag deleted.
+    Claimed { stale_tag_id: Option<String> },
+    /// Another live transfer already serves this hash; this one is a
+    /// duplicate and was removed.
+    Duplicate { existing_id: String },
+    /// The record vanished mid-import (cancelled); nothing to do.
+    Gone,
+}
+
 /// Import the source (TryReference: hashing only, no copy), persist a named
 /// tag, mint the Transfer Ticket, and flip the record to Available.
 async fn run_import(engine: &Arc<Engine>, id: &str, path: PathBuf) -> anyhow::Result<()> {
-    let (hash, size) = import_path(engine, id, &path).await?;
+    let (hash, size) = import_path(engine, id, &path, true).await?;
 
-    // Same-content dedup (D3 re-share policy): if another live send already
-    // serves this hash, hand the caller that transfer instead of a duplicate.
-    let existing = {
-        let reg = engine.registry.lock().unwrap();
-        reg.sends_by_hash.get(&hash).and_then(|other_id| {
-            reg.sends.get(other_id).and_then(|t| {
-                if other_id != id
-                    && matches!(
-                        t.record.status,
-                        SendStatus::Available | SendStatus::Paused | SendStatus::Importing
-                    )
-                {
-                    Some(other_id.clone())
-                } else {
-                    None
-                }
-            })
-        })
-    };
-    if let Some(other_id) = existing {
-        // Drop the duplicate record; the existing transfer keeps serving.
-        {
-            let mut reg = engine.registry.lock().unwrap();
-            reg.sends.remove(id);
-        }
-        engine.persist()?;
-        tracing::debug!("send deduplicated onto existing transfer");
-        engine.emit_send(&other_id);
-        return Ok(());
-    }
-
-    // Replace any stale record for this hash (expired/cancelled/changed):
-    // fresh issued_at, cleared started_receivers (documented consequence:
-    // re-sharing identical content re-validates earlier tickets).
-    {
+    // Decide ownership of this hash in ONE lock scope so concurrent imports
+    // of the same content cannot interleave (D3 re-share policy: dedup onto
+    // a live transfer; replace stale records with fresh issuance).
+    let claim = {
         let mut reg = engine.registry.lock().unwrap();
-        if let Some(stale_id) = reg.sends_by_hash.get(&hash).cloned() {
-            if stale_id != id {
-                reg.sends.remove(&stale_id);
+        if !reg.sends.contains_key(id) {
+            HashClaim::Gone
+        } else {
+            match reg.sends_by_hash.get(&hash).cloned() {
+                Some(other_id) if other_id != id => {
+                    let other_live = reg
+                        .sends
+                        .get(&other_id)
+                        .map(|t| {
+                            matches!(
+                                t.record.status,
+                                SendStatus::Available | SendStatus::Paused | SendStatus::Importing
+                            )
+                        })
+                        .unwrap_or(false);
+                    if other_live {
+                        // Mark the duplicate terminal so the UI clears it.
+                        if let Some(t) = reg.sends.get_mut(id) {
+                            t.record.status = SendStatus::Cancelled;
+                            t.import_progress = None;
+                        }
+                        HashClaim::Duplicate {
+                            existing_id: other_id,
+                        }
+                    } else {
+                        // Stale owner (expired/changed/missing): replace it.
+                        reg.sends.remove(&other_id);
+                        reg.sends_by_hash.insert(hash, id.to_string());
+                        HashClaim::Claimed {
+                            stale_tag_id: Some(other_id),
+                        }
+                    }
+                }
+                Some(_) => HashClaim::Claimed { stale_tag_id: None },
+                None => {
+                    reg.sends_by_hash.insert(hash, id.to_string());
+                    HashClaim::Claimed { stale_tag_id: None }
+                }
             }
         }
-        reg.sends_by_hash.insert(hash, id.to_string());
+    };
+
+    let stale_tag_id = match claim {
+        HashClaim::Gone => {
+            tracing::debug!("send transfer cancelled during import");
+            return Ok(());
+        }
+        HashClaim::Duplicate { existing_id } => {
+            // Emit the terminal state for the duplicate, then drop it.
+            engine.emit_send(id);
+            {
+                let mut reg = engine.registry.lock().unwrap();
+                reg.sends.remove(id);
+            }
+            engine.persist()?;
+            tracing::debug!("send deduplicated onto existing transfer");
+            engine.emit_send(&existing_id);
+            return Ok(());
+        }
+        HashClaim::Claimed { stale_tag_id } => stale_tag_id,
+    };
+    if let Some(stale_id) = stale_tag_id {
+        let _ = engine.store.tags().delete(format!("send/{stale_id}")).await;
     }
 
     engine
@@ -190,6 +228,25 @@ async fn run_import(engine: &Arc<Engine>, id: &str, path: PathBuf) -> anyhow::Re
         .set(format!("send/{id}"), hash)
         .await
         .map_err(|e| anyhow::anyhow!("tagging blob failed: {e}"))?;
+
+    // If the transfer was cancelled while we were tagging, undo the tag.
+    let cancelled_mid_flight = {
+        let reg = engine.registry.lock().unwrap();
+        !reg.sends.contains_key(id)
+    };
+    if cancelled_mid_flight {
+        let _ = engine.store.tags().delete(format!("send/{id}")).await;
+        let mut reg = engine.registry.lock().unwrap();
+        if reg
+            .sends_by_hash
+            .get(&hash)
+            .map(|v| v == id)
+            .unwrap_or(false)
+        {
+            reg.sends_by_hash.remove(&hash);
+        }
+        return Ok(());
+    }
 
     // Wait for relay registration so the ticket carries a relay URL.
     if !matches!(engine.tuning.relay_mode, iroh::RelayMode::Disabled) {
@@ -239,10 +296,16 @@ async fn run_import(engine: &Arc<Engine>, id: &str, path: PathBuf) -> anyhow::Re
     Ok(())
 }
 
-/// Run a TryReference import of `path`, reporting progress on transfer `id`.
-/// Returns (hash, size). The returned blob is protected only by the temp tag
-/// until the caller tags it.
-async fn import_path(engine: &Arc<Engine>, id: &str, path: &Path) -> anyhow::Result<(Hash, u64)> {
+/// Run a TryReference import of `path`. Returns (hash, size). The returned
+/// blob is protected only by the temp tag until the caller tags it.
+/// `report_progress` drives the transfer's import_progress; background
+/// re-hashes pass false so a serving transfer never shows bogus progress.
+async fn import_path(
+    engine: &Arc<Engine>,
+    id: &str,
+    path: &Path,
+    report_progress: bool,
+) -> anyhow::Result<(Hash, u64)> {
     let mut progress = engine
         .store
         .add_path_with_opts(AddPathOptions {
@@ -260,7 +323,8 @@ async fn import_path(engine: &Arc<Engine>, id: &str, path: &Path) -> anyhow::Res
             Some(AddProgressItem::Size(s)) => size = s,
             Some(AddProgressItem::CopyProgress(_)) | Some(AddProgressItem::CopyDone) => {}
             Some(AddProgressItem::OutboardProgress(offset)) => {
-                if size > 0 && last_emit.elapsed() >= Duration::from_millis(250) {
+                if report_progress && size > 0 && last_emit.elapsed() >= Duration::from_millis(250)
+                {
                     last_emit = std::time::Instant::now();
                     {
                         let mut reg = engine.registry.lock().unwrap();
@@ -397,10 +461,12 @@ pub async fn reselect_send_source(
     };
     engine.emit_send(id);
 
-    let (hash, _) = import_path(engine, id, &new_path).await.map_err(|e| {
-        restore_after_failed_reselect(engine, id);
-        ApiError::io(format!("could not read the selected file: {e}"))
-    })?;
+    let (hash, _) = import_path(engine, id, &new_path, true)
+        .await
+        .map_err(|e| {
+            restore_after_failed_reselect(engine, id);
+            ApiError::io(format!("could not read the selected file: {e}"))
+        })?;
 
     if hash != expected_hash {
         restore_after_failed_reselect(engine, id);
@@ -540,7 +606,7 @@ fn spawn_rehash(engine: Arc<Engine>, id: String, path: PathBuf) {
             return;
         };
 
-        let result = import_path(&engine, &id, &path).await;
+        let result = import_path(&engine, &id, &path, false).await;
         let new_status = match result {
             Err(_) => SendStatus::SourceMissing,
             Ok((hash, _)) if hash == expected => {

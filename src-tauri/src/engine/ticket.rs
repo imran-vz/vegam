@@ -88,12 +88,15 @@ impl VegamTicket {
     }
 
     pub fn preview(&self) -> TicketPreview {
+        // Saturating: issued_at is attacker-controlled ticket data.
+        let issued_at_ms = self.issued_at.saturating_mul(1000);
+        let expires_at_ms = self.expires_at().saturating_mul(1000);
         TicketPreview {
             file_name: self.file_name.clone(),
             size: self.size,
-            issued_at_ms: self.issued_at * 1000,
-            expires_at_ms: self.expires_at() * 1000,
-            is_probably_expired: now_unix_ms() > self.expires_at() * 1000,
+            issued_at_ms,
+            expires_at_ms,
+            is_probably_expired: now_unix_ms() > expires_at_ms,
         }
     }
 }

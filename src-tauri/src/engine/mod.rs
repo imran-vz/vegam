@@ -143,7 +143,7 @@ impl Registry {
             issued_at_ms: if importing {
                 None
             } else {
-                Some(r.issued_at * 1000)
+                Some(r.issued_at.saturating_mul(1000))
             },
             expires_at_ms: if importing {
                 None
@@ -151,7 +151,7 @@ impl Registry {
                 Some(
                     r.issued_at
                         .saturating_add(crate::engine::ticket::TICKET_TTL_SECS)
-                        * 1000,
+                        .saturating_mul(1000),
                 )
             },
             status: r.status,
@@ -212,6 +212,9 @@ pub struct Engine {
     /// record. Doubly protects tracked blobs (tags + this set) so GC can
     /// only reclaim what explicit user action released (ADR 0020).
     protected: Arc<Mutex<HashSet<Hash>>>,
+    /// Serializes snapshot+write in `persist` so a stale snapshot can never
+    /// overwrite a newer one.
+    persist_lock: Mutex<()>,
 }
 
 impl Engine {
@@ -291,6 +294,7 @@ impl Engine {
             settings: Mutex::new(settings),
             tuning,
             protected,
+            persist_lock: Mutex::new(()),
         });
 
         engine.restore_transfers(transfers).await?;
@@ -357,6 +361,15 @@ impl Engine {
             if resume_now {
                 record.status = ReceiveStatus::Connecting;
             }
+            // Parked records (paused/failed) get no task, so compute their
+            // partial size once here for an accurate snapshot.
+            let local_bytes = self
+                .store
+                .remote()
+                .local(iroh_blobs::HashAndFormat::raw(hash))
+                .await
+                .map(|l| l.local_bytes())
+                .unwrap_or(0);
             {
                 let mut reg = self.registry.lock().unwrap();
                 reg.receives.insert(
@@ -364,7 +377,7 @@ impl Engine {
                     ReceiveEntry {
                         record,
                         control,
-                        local_bytes: 0,
+                        local_bytes,
                         connection_kind: None,
                         error_code: None,
                         error: None,
@@ -383,6 +396,7 @@ impl Engine {
     /// GC protect set. Call on every state transition; the registry lock
     /// must NOT be held by the caller.
     pub fn persist(&self) -> Result<()> {
+        let _guard = self.persist_lock.lock().unwrap();
         let (file, hashes) = {
             let reg = self.registry.lock().unwrap();
             let file = TransfersFile {

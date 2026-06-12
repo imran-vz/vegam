@@ -585,3 +585,213 @@ async fn receiver_cancel_removes_record_and_partial_state() {
     sender.shutdown().await;
     receiver.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paused_receive_survives_restart_and_resumes() {
+    let dirs = TestDirs::new("pausedrestart");
+    let sender = Engine::init_with_tuning(dirs.engine_dir("a"), test_tuning())
+        .await
+        .unwrap();
+
+    let source = dirs.file("source.bin");
+    write_random_file(&source, 4 * 1024 * 1024);
+    let (send_id, ticket) = create_available_send(&sender, &source).await;
+    // Hold the receiver in a stall so we can pause it deterministically.
+    vegam_lib::engine::send::pause_send_transfer(&sender, &send_id).expect("pause send");
+
+    let receiver_dir = dirs.engine_dir("b");
+    let dest = dirs.file("dest.bin");
+    let recv_id = {
+        let receiver = Engine::init_with_tuning(receiver_dir.clone(), test_tuning())
+            .await
+            .unwrap();
+        let info = vegam_lib::engine::recv::create_receive_transfer(
+            &receiver,
+            ticket,
+            dest.to_string_lossy().to_string(),
+        )
+        .await
+        .expect("create receive");
+        assert!(
+            wait_for_receive_status(
+                &receiver,
+                &info.id,
+                ReceiveStatus::StalledRetrying,
+                Duration::from_secs(30)
+            )
+            .await
+        );
+        // User pauses, then "quits the app".
+        vegam_lib::engine::recv::pause_receive_transfer(&receiver, &info.id).expect("pause recv");
+        assert!(
+            wait_for_receive_status(
+                &receiver,
+                &info.id,
+                ReceiveStatus::Paused,
+                Duration::from_secs(10)
+            )
+            .await
+        );
+        receiver.shutdown().await;
+        info.id
+    };
+
+    vegam_lib::engine::send::resume_send_transfer(&sender, &send_id).expect("resume send");
+
+    // Relaunch: the paused record must stay paused, and a user resume must
+    // actually restart the download (regression test for the restored-pause
+    // dead-channel blocker).
+    let receiver = Engine::init_with_tuning(receiver_dir, test_tuning())
+        .await
+        .unwrap();
+    {
+        let reg = receiver.registry.lock().unwrap();
+        let entry = reg.receives.get(&recv_id).expect("record survived restart");
+        assert_eq!(entry.record.status, ReceiveStatus::Paused);
+    }
+    vegam_lib::engine::recv::resume_receive_transfer(&receiver, &recv_id).expect("resume recv");
+    assert!(
+        wait_for_receive_status(
+            &receiver,
+            &recv_id,
+            ReceiveStatus::Complete,
+            Duration::from_secs(60)
+        )
+        .await,
+        "paused-then-restarted receive did not complete after resume"
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        std::fs::read(&dest).unwrap()
+    );
+
+    sender.shutdown().await;
+    receiver.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn receiver_manual_pause_and_resume() {
+    let dirs = TestDirs::new("recvpause");
+    let sender = Engine::init_with_tuning(dirs.engine_dir("a"), test_tuning())
+        .await
+        .unwrap();
+    let receiver = Engine::init_with_tuning(dirs.engine_dir("b"), test_tuning())
+        .await
+        .unwrap();
+
+    let source = dirs.file("source.bin");
+    write_random_file(&source, 4 * 1024 * 1024);
+    let (send_id, ticket) = create_available_send(&sender, &source).await;
+    vegam_lib::engine::send::pause_send_transfer(&sender, &send_id).expect("pause send");
+
+    let dest = dirs.file("dest.bin");
+    let info = vegam_lib::engine::recv::create_receive_transfer(
+        &receiver,
+        ticket,
+        dest.to_string_lossy().to_string(),
+    )
+    .await
+    .expect("create receive");
+    assert!(
+        wait_for_receive_status(
+            &receiver,
+            &info.id,
+            ReceiveStatus::StalledRetrying,
+            Duration::from_secs(30)
+        )
+        .await
+    );
+
+    vegam_lib::engine::recv::pause_receive_transfer(&receiver, &info.id).expect("pause");
+    assert!(
+        wait_for_receive_status(
+            &receiver,
+            &info.id,
+            ReceiveStatus::Paused,
+            Duration::from_secs(10)
+        )
+        .await,
+        "receiver never reported Paused"
+    );
+    assert!(!dest.exists());
+
+    // Sender comes back while the receiver stays paused: still paused.
+    vegam_lib::engine::send::resume_send_transfer(&sender, &send_id).expect("resume send");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    {
+        let reg = receiver.registry.lock().unwrap();
+        assert_eq!(
+            reg.receives.get(&info.id).unwrap().record.status,
+            ReceiveStatus::Paused,
+            "paused receiver started downloading on its own"
+        );
+    }
+
+    vegam_lib::engine::recv::resume_receive_transfer(&receiver, &info.id).expect("resume");
+    assert!(
+        wait_for_receive_status(
+            &receiver,
+            &info.id,
+            ReceiveStatus::Complete,
+            Duration::from_secs(60)
+        )
+        .await
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        std::fs::read(&dest).unwrap()
+    );
+
+    sender.shutdown().await;
+    receiver.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gate_rejects_get_many_requests() {
+    use iroh_blobs::protocol::GetManyRequest;
+
+    let dirs = TestDirs::new("getmany");
+    let sender = Engine::init_with_tuning(dirs.engine_dir("a"), test_tuning())
+        .await
+        .unwrap();
+    let receiver = Engine::init_with_tuning(dirs.engine_dir("b"), test_tuning())
+        .await
+        .unwrap();
+
+    let source = dirs.file("source.bin");
+    write_random_file(&source, 1024 * 1024);
+    let (send_id, ticket_str) = create_available_send(&sender, &source).await;
+    let hash = {
+        let reg = sender.registry.lock().unwrap();
+        reg.sends.get(&send_id).unwrap().hash
+    };
+
+    // Issue a raw GetMany for the same content: the gate must reject it
+    // even though a plain Get would be accepted.
+    let ticket: vegam_lib::engine::ticket::VegamTicket = ticket_str.parse().unwrap();
+    let conn = receiver
+        .endpoint
+        .connect(ticket.blob.addr().clone(), iroh_blobs::protocol::ALPN)
+        .await
+        .expect("connect");
+    let request = GetManyRequest::builder()
+        .hash(hash, iroh_blobs::protocol::ChunkRanges::all())
+        .build();
+    let get = receiver.store.remote().execute_get_many(conn, request);
+    let mut stream = get.stream();
+    let mut failed = false;
+    while let Some(item) = n0_future::StreamExt::next(&mut stream).await {
+        match item {
+            iroh_blobs::api::remote::GetProgressItem::Error(_) => {
+                failed = true;
+                break;
+            }
+            iroh_blobs::api::remote::GetProgressItem::Done(_) => break,
+            _ => {}
+        }
+    }
+    assert!(failed, "GetMany request was not rejected by the gate");
+
+    sender.shutdown().await;
+    receiver.shutdown().await;
+}

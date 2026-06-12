@@ -27,6 +27,8 @@ async fn init_app(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<AppSnapshot, ApiError> {
+    // Serialize concurrent init calls; the second caller sees the engine.
+    let _init_guard = state.init_lock.lock().await;
     if let Some(engine) = state.engine().await {
         return Ok(engine.snapshot());
     }

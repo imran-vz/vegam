@@ -135,14 +135,17 @@ pub fn resume_receive_transfer(
             .get_mut(id)
             .ok_or_else(|| ApiError::not_found("receive transfer not found"))?;
         match entry.record.status {
-            ReceiveStatus::Paused => {
+            // A Paused entry restored from disk has no live task (its watch
+            // receiver count is 0) — sending Run would go nowhere. Respawn
+            // the task in that case.
+            ReceiveStatus::Paused if entry.control.receiver_count() > 0 => {
                 let _ = entry.control.send(RecvControl::Run);
                 None
             }
-            // A NoLongerResumable/Failed transfer may be retried once by an
-            // explicit user resume (e.g. the Sender reselected the file
-            // after we were rejected).
-            ReceiveStatus::Failed | ReceiveStatus::NoLongerResumable => {
+            // Paused-with-no-task, or a NoLongerResumable/Failed transfer
+            // retried by an explicit user resume (e.g. the Sender reselected
+            // the file after we were rejected).
+            ReceiveStatus::Paused | ReceiveStatus::Failed | ReceiveStatus::NoLongerResumable => {
                 entry.record.status = ReceiveStatus::Connecting;
                 entry.error = None;
                 entry.error_code = None;
@@ -221,6 +224,24 @@ pub fn spawn_receive_task(engine: Arc<Engine>, id: String, hash: Hash) {
     tokio::spawn(async move {
         if let Err(e) = run_receive(&engine, &id, hash).await {
             tracing::debug!("receive task ended with error: {e}");
+            // Never leave a record stranded in an active state with no task
+            // behind it — flip to Failed so the user can resume or clean up.
+            let stuck_active = {
+                let reg = engine.registry.lock().unwrap();
+                reg.receives
+                    .get(&id)
+                    .map(|entry| entry.record.status.is_active())
+                    .unwrap_or(false)
+            };
+            if stuck_active {
+                set_receive_state(
+                    &engine,
+                    &id,
+                    ReceiveStatus::Failed,
+                    Some(ErrorCode::Internal),
+                    Some(format!("transfer failed: {e}")),
+                );
+            }
         }
     });
 }
@@ -472,6 +493,7 @@ async fn run_receive(engine: &Arc<Engine>, id: &str, hash: Hash) -> anyhow::Resu
 
     // Verified complete — only now does anything touch the destination
     // (ADR 0020).
+    set_receive_state(engine, id, ReceiveStatus::Verifying, None, None);
     let local = engine.store.remote().local(haf).await?;
     anyhow::ensure!(local.is_complete(), "completion loop exited early");
     update_local_bytes(engine, id, local.local_bytes());
@@ -484,7 +506,13 @@ async fn run_receive(engine: &Arc<Engine>, id: &str, hash: Hash) -> anyhow::Resu
             None => return Ok(()),
         }
     };
-    export_atomic(engine, hash, &destination).await?;
+    export_atomic(engine, hash, &destination, &mut control).await?;
+    // A cancel that landed during the export wins: the destination was not
+    // written (export_atomic checked before renaming) and the cancel path
+    // owns the cleanup.
+    if *control.borrow() == RecvControl::Cancel {
+        return Ok(());
+    }
 
     set_receive_state(engine, id, ReceiveStatus::Complete, None, None);
     let _ = engine.store.tags().delete(format!("recv/{id}")).await;
@@ -498,11 +526,14 @@ async fn run_receive(engine: &Arc<Engine>, id: &str, hash: Hash) -> anyhow::Resu
 
 /// Export to `<dest>.vegampart` in the destination directory, then rename
 /// into place — atomic on the same filesystem, so a crash mid-export never
-/// leaves a corrupt-looking file at the destination (ADR 0020).
+/// leaves a corrupt-looking file at the destination (ADR 0020). The final
+/// rename intentionally replaces an existing file: the user chose the exact
+/// destination in a save dialog that already confirmed overwrites.
 async fn export_atomic(
     engine: &Arc<Engine>,
     hash: Hash,
     destination: &std::path::Path,
+    control: &mut watch::Receiver<RecvControl>,
 ) -> anyhow::Result<()> {
     let file_name = destination
         .file_name()
@@ -513,6 +544,9 @@ async fn export_atomic(
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
+    // A .vegampart left by a crashed earlier export is stale; replace it.
+    let _ = tokio::fs::remove_file(&temp).await;
+
     let mut stream = engine
         .store
         .export_with_opts(ExportOptions {
@@ -531,6 +565,12 @@ async fn export_atomic(
                 anyhow::bail!("export failed: {e}");
             }
         }
+    }
+    // Honor a cancel that arrived while exporting: never deliver the file
+    // for a cancelled Transfer.
+    if *control.borrow() == RecvControl::Cancel {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Ok(());
     }
     tokio::fs::rename(&temp, destination).await?;
     Ok(())

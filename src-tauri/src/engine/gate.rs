@@ -200,10 +200,18 @@ async fn handle_message(engine: &Arc<Engine>, msg: ProviderMessage) {
                     // Drain the update stream (capacity-32 channel MUST be
                     // consumed or the provider stalls). Aborting this task
                     // drops the receiver, which aborts the in-flight send —
-                    // the mechanism behind sender pause/cancel.
+                    // the mechanism behind sender pause/cancel. The drain
+                    // waits for `registered` so its natural-end cleanup can
+                    // never race the ActiveRequest insert below.
+                    let (registered_tx, registered_rx) = tokio::sync::oneshot::channel::<()>();
                     let drain_engine = engine.clone();
-                    let drain =
-                        tokio::spawn(drain_request_updates(drain_engine, m.rx, conn_id, req_id));
+                    let drain = tokio::spawn(drain_request_updates(
+                        drain_engine,
+                        m.rx,
+                        conn_id,
+                        req_id,
+                        registered_rx,
+                    ));
                     {
                         let mut reg = engine.registry.lock().unwrap();
                         reg.active_requests.insert(
@@ -215,6 +223,7 @@ async fn handle_message(engine: &Arc<Engine>, msg: ProviderMessage) {
                             },
                         );
                     }
+                    let _ = registered_tx.send(());
                     if let Some(id) = send_id {
                         engine.emit_send(&id);
                     }
@@ -255,10 +264,24 @@ async fn drain_request_updates(
     mut rx: irpc::channel::mpsc::Receiver<RequestUpdate>,
     conn_id: u64,
     req_id: u64,
+    registered: tokio::sync::oneshot::Receiver<()>,
 ) {
-    while let Ok(Some(_update)) = rx.recv().await {
-        // Transfer events are not individually interesting yet; the stream
-        // must simply be drained.
+    let _ = registered.await;
+    let mut aborted = false;
+    while let Ok(Some(update)) = rx.recv().await {
+        // The channel must be drained or the provider stalls. An Aborted
+        // update may mean the provider hit unreadable/changed source data —
+        // corroborate with a stat sweep so a real content change gets
+        // re-hashed promptly (the sweep is a no-op when nothing drifted).
+        if matches!(update, RequestUpdate::Aborted(_)) {
+            aborted = true;
+        }
+    }
+    if aborted {
+        let sweep_engine = engine.clone();
+        tokio::spawn(async move {
+            crate::engine::send::sweep_send_sources(&sweep_engine).await;
+        });
     }
     let send_id = {
         let mut reg = engine.registry.lock().unwrap();
