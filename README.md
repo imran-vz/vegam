@@ -23,7 +23,7 @@ Transfer Tickets are bearer values: anyone holding a valid ticket can download t
 
 ## Download
 
-Desktop v1 release artifacts are not published yet. When they are, you will download them from [Releases](../../releases): v1 releases will be unsigned, so expect macOS Gatekeeper and Windows SmartScreen warnings, and every artifact will ship with a SHA-256 checksum to verify before installing.
+Desktop v1 release artifacts are not published yet. When they are, you will download them from [Releases](../../releases): v1 releases will be unsigned, so expect macOS Gatekeeper and Windows SmartScreen warnings, and every artifact will ship with a SHA-256 checksum to verify before installing. Verification commands and the expected install friction are documented in [RELEASING.md](RELEASING.md).
 
 ## Development
 

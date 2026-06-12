@@ -795,3 +795,67 @@ async fn gate_rejects_get_many_requests() {
     sender.shutdown().await;
     receiver.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn multiple_receivers_one_ticket() {
+    let dirs = TestDirs::new("multirecv");
+    let sender = Engine::init_with_tuning(dirs.engine_dir("a"), test_tuning())
+        .await
+        .unwrap();
+    let receiver_b = Engine::init_with_tuning(dirs.engine_dir("b"), test_tuning())
+        .await
+        .unwrap();
+    let receiver_c = Engine::init_with_tuning(dirs.engine_dir("c"), test_tuning())
+        .await
+        .unwrap();
+
+    let source = dirs.file("source.bin");
+    write_random_file(&source, 4 * 1024 * 1024);
+    let (_, ticket) = create_available_send(&sender, &source).await;
+
+    // ADR 0003: one bearer ticket, multiple Receivers.
+    let dest_b = dirs.file("dest-b.bin");
+    let dest_c = dirs.file("dest-c.bin");
+    let info_b = vegam_lib::engine::recv::create_receive_transfer(
+        &receiver_b,
+        ticket.clone(),
+        dest_b.to_string_lossy().to_string(),
+    )
+    .await
+    .expect("create receive b");
+    let info_c = vegam_lib::engine::recv::create_receive_transfer(
+        &receiver_c,
+        ticket,
+        dest_c.to_string_lossy().to_string(),
+    )
+    .await
+    .expect("create receive c");
+
+    assert!(
+        wait_for_receive_status(
+            &receiver_b,
+            &info_b.id,
+            ReceiveStatus::Complete,
+            Duration::from_secs(60)
+        )
+        .await,
+        "receiver B never completed"
+    );
+    assert!(
+        wait_for_receive_status(
+            &receiver_c,
+            &info_c.id,
+            ReceiveStatus::Complete,
+            Duration::from_secs(60)
+        )
+        .await,
+        "receiver C never completed"
+    );
+    let src = std::fs::read(&source).unwrap();
+    assert_eq!(src, std::fs::read(&dest_b).unwrap());
+    assert_eq!(src, std::fs::read(&dest_c).unwrap());
+
+    sender.shutdown().await;
+    receiver_b.shutdown().await;
+    receiver_c.shutdown().await;
+}
