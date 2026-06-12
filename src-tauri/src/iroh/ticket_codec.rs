@@ -145,9 +145,15 @@ mod tests {
         let node_id = "test-node";
         let encrypted = encrypt_ticket(ticket, node_id).unwrap();
 
-        // Should be URL-safe (no special chars that need escaping)
-        assert!(!encrypted.contains('='));
-        assert!(!encrypted.contains('+'));
-        assert!(!encrypted.contains('/'));
+        // The encoded payload after "vegam://node_id:" should be URL-safe
+        // (no special chars that need escaping)
+        let payload = encrypted
+            .strip_prefix("vegam://")
+            .and_then(|s| s.split_once(':'))
+            .map(|(_, payload)| payload)
+            .unwrap();
+        assert!(!payload.contains('='));
+        assert!(!payload.contains('+'));
+        assert!(!payload.contains('/'));
     }
 }

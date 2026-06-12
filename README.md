@@ -1,29 +1,29 @@
 # Vegam
 
-**Fast, secure P2P file transfer between devices**
+**Fast, direct file transfer between your own computers**
 
-Vegam enables direct file transfers between macOS and Android devices without servers, clouds, or intermediaries. Built on [Iroh](https://iroh.computer) for automatic NAT traversal and peer discovery.
+Vegam transfers a single file directly between desktop computers without servers, clouds, or intermediaries. The Sender creates a Transfer Ticket, shares it out-of-band, and the Receiver uses it to download the file. Built on [Iroh](https://iroh.computer) for NAT traversal with relay fallback.
 
-## Features
+## Desktop Release Scope
 
-- **Direct P2P transfers** - Files go directly between devices
-- **No file size limits** - Transfer anything
-- **Zero configuration** - Works across NATs and firewalls
-- **Cross-platform** - macOS and Android
-- **Open source** - MIT licensed
+Vegam v1 targets desktop platforms:
 
-## Download
+- **macOS** 12 and newer (`.dmg`)
+- **Windows** 10 and 11 (`.msi`)
+- **Linux** mainstream desktops with AppImage-compatible glibc (`.AppImage`)
 
-**macOS**: Download `.dmg` from [Releases](../../releases)
-
-**Android**: Download `.apk` from [Releases](../../releases)
+Mobile (Android/iOS) is future work and is not part of the v1 production path. Preserved mobile implementation knowledge lives in [`docs/mobile/`](docs/mobile/).
 
 ## How It Works
 
-1. **Send**: Select file → Share ticket string
-2. **Receive**: Paste ticket → Download file
+1. **Send**: Select one file → Vegam creates a Transfer Ticket → copy and share it
+2. **Receive**: Paste the Transfer Ticket → choose a destination → download
 
-Devices connect directly using Iroh's relay network for NAT traversal. Files never touch third-party servers.
+Transfer Tickets are bearer values: anyone holding a valid ticket can download the file while the Sender keeps Vegam open. In v1, Transfer Tickets will expire after 24 hours by default (this expiry is not implemented yet; today a ticket stays usable for as long as the Sender keeps Vegam open). Devices connect directly when possible and fall back to Iroh's public relay network when they can't; file data never rests on third-party servers.
+
+## Download
+
+Desktop v1 release artifacts are not published yet. When they are, you will download them from [Releases](../../releases): v1 releases will be unsigned, so expect macOS Gatekeeper and Windows SmartScreen warnings, and every artifact will ship with a SHA-256 checksum to verify before installing.
 
 ## Development
 
@@ -31,14 +31,8 @@ Devices connect directly using Iroh's relay network for NAT traversal. Files nev
 
 - Node.js 20+
 - pnpm
-- Rust 1.70+
+- Rust (see `src-tauri/Cargo.toml` for the minimum version)
 - [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
-
-**Android only**:
-
-- Android Studio
-- Android SDK 33+
-- NDK
 
 ### Setup
 
@@ -51,21 +45,21 @@ pnpm install
 ### Run
 
 ```bash
-# Desktop
 pnpm tauri dev
+```
 
-# Android (device/emulator required)
-pnpm tauri android dev
+### Verify
+
+```bash
+pnpm run check
+cd src-tauri && cargo check
+cd src-tauri && cargo test
 ```
 
 ### Build
 
 ```bash
-# macOS
 pnpm tauri build
-
-# Android APK
-pnpm tauri android build
 ```
 
 ## Tech Stack
@@ -82,9 +76,10 @@ src-tauri/         # Rust backend
   src/iroh/        # Iroh integration
   src/state.rs     # App state management
   capabilities/    # Tauri permissions
+docs/              # Product context, roadmap, ADRs, research
 ```
 
-See [CLAUDE.md](CLAUDE.md) for detailed architecture.
+Product scope and terminology live in [CONTEXT.md](CONTEXT.md), the roadmap in [docs/roadmap/](docs/roadmap/), and decisions in [docs/adr/](docs/adr/).
 
 ## Contributing
 

@@ -2,7 +2,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { debug } from "@tauri-apps/plugin-log";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Check, Copy, File, Loader2 } from "lucide-react";
-import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useReducer, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -205,10 +204,6 @@ export function SendFile() {
 									)}
 								</Button>
 							</div>
-						</div>
-
-						<div className="flex justify-center p-4 bg-white rounded-lg">
-							<QRCodeSVG value={state.data.ticket} size={200} level="M" />
 						</div>
 
 						<Button

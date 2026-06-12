@@ -84,6 +84,7 @@ impl AppState {
     }
 
     #[cfg(debug_assertions)]
+    #[allow(dead_code)]
     pub async fn get_iroh_debug(&self) -> Result<Iroh> {
         let iroh = self.iroh_debug.read().await;
         iroh.clone()

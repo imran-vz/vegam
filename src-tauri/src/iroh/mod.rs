@@ -62,6 +62,7 @@ impl std::fmt::Display for GossipTicket {
 #[derive(Debug, Clone)]
 pub struct GossipClient {
     pub client: Gossip,
+    #[allow(dead_code)]
     ticket: GossipTicket,
     channel: Arc<RwLock<GossipChannel>>,
 }
@@ -104,6 +105,7 @@ impl GossipClient {
         chan.sender.clone()
     }
 
+    #[allow(dead_code)]
     pub fn ticket(&self) -> &GossipTicket {
         &self.ticket
     }
@@ -167,7 +169,7 @@ impl Iroh {
         let blobs = store.blobs().clone();
         let downloader = store.downloader(&endpoint);
 
-        // Wait for relay connection to establish (longer timeout for mobile networks)
+        // Wait for relay connection to establish
         tracing::info!("Waiting for relay connection...");
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 

@@ -16,7 +16,6 @@
         "label": "main",
         "width": 800,
         "height": 600,
-        "transparent": true,
         "resizable": false
       }
     ],
@@ -27,9 +26,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "android": {
-      "minSdkVersion": 28
-    },
     "category": "Utility",
     "shortDescription": "A file transfer app",
     "longDescription": "A file transfer app",

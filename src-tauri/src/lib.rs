@@ -121,7 +121,7 @@ async fn send_file(
     state.add_transfer(initial_transfer.clone()).await;
     let _ = app.emit("transfer-update", &initial_transfer);
 
-    // Read file using platform-specific handler (handles Android content URIs)
+    // Read file from the local filesystem
     let start_time = std::time::Instant::now();
     let file_data = platform::read_file(&app, &file_path)
         .await
@@ -156,7 +156,10 @@ async fn send_file(
     // Store tag to keep blob alive in MemStore until transfer completes
     if let Some(tag) = ticket_info.tag.clone() {
         state.add_blob_tag(tag.hash, tag.clone()).await;
-        info!("✓ Tag stored in AppState for hash: {} - blob protected from GC", tag.hash);
+        info!(
+            "✓ Tag stored in AppState for hash: {} - blob protected from GC",
+            tag.hash
+        );
     } else {
         info!("⚠ Warning: No tag returned from create_send_ticket");
     }
@@ -400,34 +403,9 @@ async fn get_relay_status(state: State<'_, AppState>) -> Result<RelayStatus, Str
     })
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState::new();
 
-    #[cfg(target_os = "android")]
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_barcode_scanner::init())
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_android_fs::init())
-        .plugin(
-            tauri_plugin_log::Builder::new()
-                .level(log::LevelFilter::Debug)
-                .filter(|metadata| {
-                    metadata.target().starts_with("vegam_lib")
-                        || metadata.level() <= log::Level::Error
-                })
-                .targets([
-                    Target::new(TargetKind::Stdout),
-                    Target::new(TargetKind::LogDir { file_name: None }),
-                    Target::new(TargetKind::Webview),
-                ])
-                .build(),
-        );
-
-    #[cfg(not(target_os = "android"))]
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())

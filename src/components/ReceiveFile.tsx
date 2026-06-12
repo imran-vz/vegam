@@ -2,9 +2,8 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { debug } from "@tauri-apps/plugin-log";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { Download, Loader2 } from "lucide-react";
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer } from "react";
 
-import { QRScanner } from "@/components/QRScanner";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -28,7 +27,6 @@ export function ReceiveFile() {
 		type: "idle",
 		ticket: "",
 	});
-	const [showScanner, setShowScanner] = useState(false);
 
 	// Listen for transfer progress and completion updates
 	useEffect(() => {
@@ -83,11 +81,6 @@ export function ReceiveFile() {
 		} catch (err) {
 			dispatch({ type: "ERROR", error: parseError(err) });
 		}
-	};
-
-	const handleQRScan = (ticket: string) => {
-		dispatch({ type: "SET_TICKET", ticket: ticket.trim() });
-		setShowScanner(false);
 	};
 
 	const handleReceive = async () => {
@@ -172,32 +165,15 @@ export function ReceiveFile() {
 								placeholder="Paste transfer ticket here..."
 								className="w-full h-24 p-3 text-sm font-mono border rounded-lg resize-none"
 							/>
-							<div className="grid grid-cols-2 gap-2">
-								<Button
-									variant="outline"
-									size="sm"
-									onClick={handlePaste}
-									className="w-full"
-								>
-									Paste from Clipboard
-								</Button>
-								<Button
-									variant="outline"
-									size="sm"
-									onClick={() => setShowScanner(!showScanner)}
-									className="w-full"
-								>
-									{showScanner ? "Hide Scanner" : "Scan QR Code"}
-								</Button>
-							</div>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={handlePaste}
+								className="w-full"
+							>
+								Paste from Clipboard
+							</Button>
 						</div>
-
-						{showScanner && (
-							<QRScanner
-								onScan={handleQRScan}
-								onError={(err) => dispatch({ type: "ERROR", error: err })}
-							/>
-						)}
 
 						<Button
 							onClick={handleReceive}
