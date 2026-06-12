@@ -13,6 +13,7 @@ function DisplayNameEditor({ initialName }: { initialName: string }) {
 	const [name, setName] = useState(initialName);
 	const [draft, setDraft] = useState(initialName);
 	const [editing, setEditing] = useState(false);
+	const [saveError, setSaveError] = useState<string | null>(null);
 
 	const commit = async () => {
 		const trimmed = draft.trim();
@@ -21,9 +22,12 @@ function DisplayNameEditor({ initialName }: { initialName: string }) {
 				const settings = await setDisplayName(trimmed);
 				setName(settings.display_name);
 				setDraft(settings.display_name);
-			} catch (error) {
-				console.error("Failed to save display name:", error);
-				setDraft(name);
+				setSaveError(null);
+			} catch {
+				// Keep the editor open with the draft so the edit isn't
+				// silently discarded.
+				setSaveError("Could not save the name. Try again.");
+				return;
 			}
 		} else {
 			setDraft(name);
@@ -45,23 +49,32 @@ function DisplayNameEditor({ initialName }: { initialName: string }) {
 		);
 	}
 	return (
-		<span className="inline-flex items-center gap-1">
-			<input
-				value={draft}
-				onChange={(e) => setDraft(e.target.value)}
-				onKeyDown={(e) => {
-					if (e.key === "Enter") commit();
-					if (e.key === "Escape") {
-						setDraft(name);
-						setEditing(false);
-					}
-				}}
-				className="text-xs md:text-sm border rounded px-2 py-0.5 bg-background"
-				maxLength={64}
-			/>
-			<Button size="icon" variant="ghost" className="size-6" onClick={commit}>
-				<Check className="size-3" />
-			</Button>
+		<span className="inline-flex flex-col items-center gap-1">
+			<span className="inline-flex items-center gap-1">
+				<input
+					value={draft}
+					onChange={(e) => setDraft(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") commit();
+						if (e.key === "Escape") {
+							setDraft(name);
+							setSaveError(null);
+							setEditing(false);
+						}
+					}}
+					className="text-xs md:text-sm border rounded px-2 py-0.5 bg-background"
+					maxLength={64}
+				/>
+				<Button
+					size="icon"
+					variant="ghost"
+					className="size-6"
+					onClick={commit}
+				>
+					<Check className="size-3" />
+				</Button>
+			</span>
+			{saveError && <span className="text-xs text-destructive">{saveError}</span>}
 		</span>
 	);
 }
@@ -124,13 +137,30 @@ function App() {
 						<TabsTrigger value="receive">Receive</TabsTrigger>
 						<TabsTrigger value="storage">Storage</TabsTrigger>
 					</TabsList>
-					<TabsContent value="send" className="mt-4 md:mt-6">
+					{/* forceMount keeps the tab panels mounted across switches:
+					    the components hold live transfer state fed by events,
+					    and unmounting would reset them to the stale app-start
+					    snapshot (losing active transfer cards and showing a
+					    wrong analytics toggle). */}
+					<TabsContent
+						forceMount
+						value="send"
+						className="mt-4 md:mt-6 data-[state=inactive]:hidden"
+					>
 						<SendFile initialTransfers={snapshot.send_transfers} />
 					</TabsContent>
-					<TabsContent value="receive" className="mt-4 md:mt-6">
+					<TabsContent
+						forceMount
+						value="receive"
+						className="mt-4 md:mt-6 data-[state=inactive]:hidden"
+					>
 						<ReceiveFile initialTransfers={snapshot.receive_transfers} />
 					</TabsContent>
-					<TabsContent value="storage" className="mt-4 md:mt-6 space-y-4">
+					<TabsContent
+						forceMount
+						value="storage"
+						className="mt-4 md:mt-6 space-y-4 data-[state=inactive]:hidden"
+					>
 						<PartialDownloads />
 						<PrivacySettings initialSettings={snapshot.settings} />
 					</TabsContent>

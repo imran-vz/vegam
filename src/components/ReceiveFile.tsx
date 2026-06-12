@@ -66,14 +66,24 @@ export function ReceiveFile({ initialTransfers }: ReceiveFileProps) {
 	useEffect(() => {
 		const unlistenUpdate = listenToReceiveTransferUpdates((updated) => {
 			setTransfers((current) => {
-				const without = current.filter((t) => t.id !== updated.id);
 				if (updated.status === "cancelled") {
-					return without;
+					return current.filter((t) => t.id !== updated.id);
 				}
-				return [...without, updated].sort((a, b) =>
-					a.id.localeCompare(b.id),
-				);
+				// Update in place to keep insertion order stable; append new.
+				if (current.some((t) => t.id === updated.id)) {
+					return current.map((t) => (t.id === updated.id ? updated : t));
+				}
+				return [...current, updated];
 			});
+			// Status changes carry fresher byte counts than the throttled
+			// progress stream; drop stale progress for non-downloading states.
+			if (updated.status !== "downloading") {
+				setProgressById((current) => {
+					if (!(updated.id in current)) return current;
+					const { [updated.id]: _dropped, ...rest } = current;
+					return rest;
+				});
+			}
 		});
 		const unlistenProgress = listenToReceiveTransferProgress((p) => {
 			setProgressById((current) => ({ ...current, [p.id]: p }));
@@ -101,9 +111,17 @@ export function ReceiveFile({ initialTransfers }: ReceiveFileProps) {
 		setBusy(true);
 		try {
 			const preview = await inspectTicket(ticket.trim());
-			const selectedPath = await save({
-				defaultPath: `Downloads/${preview.file_name}`,
-			});
+			if (preview.is_probably_expired) {
+				// Advisory only — the Sender is authoritative; warn but allow.
+				setError(
+					"This ticket looks expired. It will only work if you already started this download earlier.",
+				);
+			}
+			// The ticket's file name is sender-supplied: keep only a base
+			// name so it cannot steer the save dialog's location.
+			const safeName =
+				preview.file_name.split(/[/\\]/).filter(Boolean).pop() || "download";
+			const selectedPath = await save({ defaultPath: safeName });
 			if (!selectedPath) return;
 			const info = await createReceiveTransfer(ticket.trim(), selectedPath);
 			setTransfers((current) => [
@@ -120,6 +138,11 @@ export function ReceiveFile({ initialTransfers }: ReceiveFileProps) {
 
 	const removeLocal = (id: string) => {
 		setTransfers((current) => current.filter((t) => t.id !== id));
+		setProgressById((current) => {
+			if (!(id in current)) return current;
+			const { [id]: _dropped, ...rest } = current;
+			return rest;
+		});
 	};
 
 	return (
@@ -209,7 +232,11 @@ function ReceiveTransferCard({
 	};
 
 	const isActive = ACTIVE_STATUSES.includes(transfer.status);
-	const localBytes = progress?.local_bytes ?? transfer.local_bytes;
+	// Use the freshest byte count from either source.
+	const localBytes = Math.max(
+		progress?.local_bytes ?? 0,
+		transfer.local_bytes,
+	);
 	const percent =
 		transfer.size > 0 ? Math.round((localBytes / transfer.size) * 100) : 0;
 	const kind = progress?.connection_kind ?? transfer.connection_kind;
@@ -245,9 +272,11 @@ function ReceiveTransferCard({
 									? "Relayed"
 									: ""}
 						</span>
-						{progress && progress.speed_bps > 0 && isActive && (
-							<span>{formatTransferSpeed(progress.speed_bps)}</span>
-						)}
+						{progress &&
+							progress.speed_bps > 0 &&
+							transfer.status === "downloading" && (
+								<span>{formatTransferSpeed(progress.speed_bps)}</span>
+							)}
 					</div>
 				</div>
 			)}

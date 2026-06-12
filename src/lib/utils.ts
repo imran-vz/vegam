@@ -1,4 +1,4 @@
-import { error as logError } from "@tauri-apps/plugin-log";
+
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -36,6 +36,8 @@ export function parseError(error: unknown): string {
 		message = error;
 	}
 
-	logError(message);
+	// Deliberately not forwarded to the log plugin: webview-target records
+	// are excluded from persisted logs by the privacy filter (ADR 0014), and
+	// the message can embed backend error chains. The UI already shows it.
 	return message;
 }

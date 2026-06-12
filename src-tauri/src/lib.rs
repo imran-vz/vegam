@@ -200,13 +200,16 @@ async fn set_analytics_enabled(
     enabled: bool,
 ) -> Result<Settings, ApiError> {
     let engine = get_engine(&state).await?;
+    // Clone+save under the lock so concurrent settings writes cannot
+    // persist out of order (mirrors Engine::persist's discipline).
     let settings = {
         let mut guard = engine.settings.lock().unwrap();
         guard.analytics_enabled = enabled;
-        guard.clone()
+        let snapshot = guard.clone();
+        engine::settings::save(&engine.paths.settings(), &snapshot)
+            .map_err(|e| ApiError::io(format!("saving settings failed: {e}")))?;
+        snapshot
     };
-    engine::settings::save(&engine.paths.settings(), &settings)
-        .map_err(|e| ApiError::io(format!("saving settings failed: {e}")))?;
     Ok(settings)
 }
 
@@ -257,10 +260,11 @@ async fn set_display_name(
     let settings = {
         let mut guard = engine.settings.lock().unwrap();
         guard.display_name = trimmed.to_string();
-        guard.clone()
+        let snapshot = guard.clone();
+        engine::settings::save(&engine.paths.settings(), &snapshot)
+            .map_err(|e| ApiError::io(format!("saving settings failed: {e}")))?;
+        snapshot
     };
-    engine::settings::save(&engine.paths.settings(), &settings)
-        .map_err(|e| ApiError::io(format!("saving settings failed: {e}")))?;
     Ok(settings)
 }
 
@@ -277,9 +281,15 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 // Privacy default (ADR 0014): persist ONLY Vegam's own log
                 // targets. Third-party crates (including iroh internals) can
-                // carry peer addresses in error messages, which must not
-                // land in local logs by default.
+                // carry peer addresses in error messages, and webview-
+                // originated records can embed backend error chains; neither
+                // lands in local logs by default.
                 .filter(|metadata| metadata.target().starts_with("vegam_lib"))
+                // Keep enough history for support: the default (40KB,
+                // delete-on-rotate) destroys the evidence on the restart
+                // that usually follows a bug.
+                .max_file_size(10 * 1024 * 1024)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::LogDir { file_name: None }),

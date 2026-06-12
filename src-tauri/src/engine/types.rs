@@ -152,7 +152,9 @@ pub struct Settings {
     pub analytics_enabled: bool,
     /// Anonymous random id for telemetry; generated on first use. Never the
     /// endpoint id (that is a peer identity, which telemetry must not see).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Never serialized to the UI — the frontend has no use for it (disk
+    /// persistence goes through SettingsFile, not this type).
+    #[serde(default, skip_serializing)]
     pub analytics_id: Option<String>,
 }
 

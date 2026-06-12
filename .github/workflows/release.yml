@@ -1,0 +1,97 @@
+# Desktop v1 release pipeline (roadmap Phase 7, ADRs 0010/0012/0013).
+#
+# Builds the three v1 artifacts — macOS .dmg, Windows .msi, Linux .AppImage —
+# unsigned (ADR 0012: no paid signing in v1), publishes them to a draft
+# GitHub release, and attaches a SHA256SUMS.txt so every artifact has a
+# published, copyable checksum (ADR 0013).
+#
+# Trigger: push a tag like v0.1.0. The release is created as a draft so the
+# checksums and install instructions can be reviewed before publishing.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --bundles dmg
+          - platform: windows-latest
+            args: --bundles msi
+          - platform: ubuntu-22.04
+            args: --bundles appimage
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build and upload to draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Vegam ${{ github.ref_name }}"
+          releaseDraft: true
+          args: ${{ matrix.args }}
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts and publish SHA-256 checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir artifacts && cd artifacts
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY"
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber
+          # Put the checksums into the release body too, so each value is
+          # visible and copyable without downloading SHA256SUMS.txt.
+          {
+            echo "## SHA-256 checksums"
+            echo
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+            echo
+            echo "See RELEASING.md for verification instructions and notes"
+            echo "about unsigned macOS/Windows installs."
+          } > body.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file body.md

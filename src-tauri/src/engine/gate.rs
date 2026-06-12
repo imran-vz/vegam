@@ -225,6 +225,10 @@ async fn handle_message(engine: &Arc<Engine>, msg: ProviderMessage) {
                     }
                     let _ = registered_tx.send(());
                     if let Some(id) = send_id {
+                        // Sender-side diagnostics breadcrumb (transfer id
+                        // only) so an exported Sender log shows receiver
+                        // activity per transfer.
+                        tracing::info!(transfer = %id, "receiver request accepted");
                         engine.emit_send(&id);
                     }
                 }

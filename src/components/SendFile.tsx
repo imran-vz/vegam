@@ -59,13 +59,14 @@ export function SendFile({ initialTransfers }: SendFileProps) {
 	useEffect(() => {
 		const unlisten = listenToSendTransferUpdates((updated) => {
 			setTransfers((current) => {
-				const without = current.filter((t) => t.id !== updated.id);
 				if (updated.status === "cancelled") {
-					return without;
+					return current.filter((t) => t.id !== updated.id);
 				}
-				return [...without, updated].sort((a, b) =>
-					a.id.localeCompare(b.id),
-				);
+				// Update in place to keep insertion order stable; append new.
+				if (current.some((t) => t.id === updated.id)) {
+					return current.map((t) => (t.id === updated.id ? updated : t));
+				}
+				return [...current, updated];
 			});
 		});
 		return () => {
@@ -167,13 +168,20 @@ function SendTransferCard({
 		});
 	};
 
+	// Content changed = the old ticket is dead by design (Content Identity);
+	// the way forward is a fresh transfer with a new ticket.
+	const handleCreateNewTicket = async () => {
+		await act(async () => {
+			await createSendTransfer(transfer.source_path);
+			await cancelSendTransfer(transfer.id);
+			onRemoved();
+		});
+	};
+
 	const handleCancel = async () => {
 		await act(() => cancelSendTransfer(transfer.id));
 		onRemoved();
 	};
-
-	const needsReselect =
-		transfer.status === "sourceMissing" || transfer.status === "contentChanged";
 
 	return (
 		<div className="space-y-3 p-3 border rounded-lg">
@@ -211,14 +219,32 @@ function SendTransferCard({
 							)}
 						</Button>
 					</div>
-					<p className="text-xs text-muted-foreground">
-						Anyone with this Transfer Ticket can download the file while you
-						keep Vegam open. It expires{" "}
-						{transfer.expires_at_ms
-							? new Date(transfer.expires_at_ms).toLocaleString()
-							: "in 24 hours"}
-						.
-					</p>
+					{transfer.status === "available" && (
+						<p className="text-xs text-muted-foreground">
+							Anyone with this Transfer Ticket can download the file while
+							you keep Vegam open. It expires{" "}
+							{transfer.expires_at_ms
+								? new Date(transfer.expires_at_ms).toLocaleString()
+								: "in 24 hours"}
+							.
+						</p>
+					)}
+					{transfer.status === "paused" && (
+						<p className="text-xs text-muted-foreground">
+							Downloads are on hold while paused. Receivers keep their
+							progress and continue when you resume.
+						</p>
+					)}
+					{transfer.status === "expired" && (
+						<p className="text-xs text-muted-foreground">
+							This Transfer Ticket expired
+							{transfer.expires_at_ms
+								? ` ${new Date(transfer.expires_at_ms).toLocaleString()}`
+								: ""}
+							. New receivers are blocked; receivers who already started can
+							still finish.
+						</p>
+					)}
 					{transfer.active_receiver_count > 0 && (
 						<p className="text-xs text-muted-foreground">
 							{transfer.active_receiver_count} active{" "}
@@ -233,7 +259,7 @@ function SendTransferCard({
 			{transfer.status === "contentChanged" && (
 				<p className="text-xs text-muted-foreground">
 					The file's content changed, so this Transfer Ticket no longer
-					works. Select the file again to create a new ticket.
+					works. Create a new ticket to share the file as it is now.
 				</p>
 			)}
 
@@ -260,7 +286,7 @@ function SendTransferCard({
 						Resume
 					</Button>
 				)}
-				{needsReselect && (
+				{transfer.status === "sourceMissing" && (
 					<Button
 						variant="outline"
 						size="sm"
@@ -269,6 +295,17 @@ function SendTransferCard({
 					>
 						<FileSearch className="size-4" />
 						Locate File
+					</Button>
+				)}
+				{transfer.status === "contentChanged" && (
+					<Button
+						variant="outline"
+						size="sm"
+						className="flex-1"
+						onClick={handleCreateNewTicket}
+					>
+						<File className="size-4" />
+						Create New Ticket
 					</Button>
 				)}
 				<Button

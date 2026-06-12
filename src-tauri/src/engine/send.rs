@@ -188,8 +188,11 @@ async fn run_import(engine: &Arc<Engine>, id: &str, path: PathBuf) -> anyhow::Re
                         }
                     } else {
                         // Stale owner (expired/changed/missing): replace it.
-                        reg.sends.remove(&other_id);
-                        reg.sends_by_hash.insert(hash, id.to_string());
+                        // Mark it terminal first so a UI card showing it gets
+                        // a removal event (emitted after the lock drops).
+                        if let Some(stale) = reg.sends.get_mut(&other_id) {
+                            stale.record.status = SendStatus::Cancelled;
+                        }
                         HashClaim::Claimed {
                             stale_tag_id: Some(other_id),
                         }
@@ -224,6 +227,15 @@ async fn run_import(engine: &Arc<Engine>, id: &str, path: PathBuf) -> anyhow::Re
         HashClaim::Claimed { stale_tag_id } => stale_tag_id,
     };
     if let Some(stale_id) = stale_tag_id {
+        // The stale owner was marked Cancelled under the lock; emit that so
+        // any UI card for it clears, then drop the record and take over the
+        // hash mapping.
+        engine.emit_send(&stale_id);
+        {
+            let mut reg = engine.registry.lock().unwrap();
+            reg.sends.remove(&stale_id);
+            reg.sends_by_hash.insert(hash, id.to_string());
+        }
         let _ = engine.store.tags().delete(format!("send/{stale_id}")).await;
     }
 

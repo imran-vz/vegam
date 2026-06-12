@@ -428,24 +428,21 @@ impl Engine {
     }
 
     /// Anonymous telemetry id, generated lazily and persisted in settings.
+    /// Saved under the settings lock so concurrent settings writes cannot
+    /// persist out of order.
     pub fn analytics_id(&self) -> String {
-        let (id, save) = {
-            let mut guard = self.settings.lock().unwrap();
-            match &guard.analytics_id {
-                Some(id) => (id.clone(), None),
-                None => {
-                    let id = uuid::Uuid::new_v4().to_string();
-                    guard.analytics_id = Some(id.clone());
-                    (id, Some(guard.clone()))
+        let mut guard = self.settings.lock().unwrap();
+        match &guard.analytics_id {
+            Some(id) => id.clone(),
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                guard.analytics_id = Some(id.clone());
+                if let Err(e) = settings::save(&self.paths.settings(), &guard) {
+                    tracing::warn!("persisting analytics id failed: {e}");
                 }
-            }
-        };
-        if let Some(snapshot) = save {
-            if let Err(e) = settings::save(&self.paths.settings(), &snapshot) {
-                tracing::warn!("persisting analytics id failed: {e}");
+                id
             }
         }
-        id
     }
 
     /// Emit the current state of a send transfer.

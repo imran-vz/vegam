@@ -86,7 +86,14 @@ pub fn load(path: &Path) -> Result<TransfersFile> {
             // A corrupt metadata file must not brick the app. Preserve it
             // for inspection and start with an empty list; orphaned blobs
             // surface in the Storage tab rather than being lost.
-            tracing::warn!("transfers file unparseable ({e}); moving it aside");
+            // Privacy: log only structural error info — serde_json's Display
+            // can embed file content (tickets, paths, hashes).
+            tracing::warn!(
+                "transfers file unparseable ({:?} at {}:{}); moving it aside",
+                e.classify(),
+                e.line(),
+                e.column()
+            );
             let aside = path.with_extension("json.corrupt");
             let _ = std::fs::rename(path, &aside);
             return Ok(TransfersFile {
