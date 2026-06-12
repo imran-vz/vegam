@@ -327,6 +327,9 @@ async fn run_receive(engine: &Arc<Engine>, id: &str, hash: Hash) -> anyhow::Resu
             }
         };
         let kind = connection_kind(&conn);
+        // Coarse Direct/Relayed breadcrumb (transfer id only) so local logs
+        // can distinguish relay problems from direct-path problems.
+        tracing::info!(transfer = %id, kind = ?kind, "transfer connection established");
         {
             let mut reg = engine.registry.lock().unwrap();
             if let Some(entry) = reg.receives.get_mut(id) {
@@ -515,6 +518,11 @@ async fn run_receive(engine: &Arc<Engine>, id: &str, hash: Hash) -> anyhow::Resu
     }
 
     set_receive_state(engine, id, ReceiveStatus::Complete, None, None);
+    crate::engine::telemetry::capture(
+        engine,
+        crate::engine::telemetry::Event::ReceiveTransferCompleted,
+        Some(local.local_bytes()),
+    );
     let _ = engine.store.tags().delete(format!("recv/{id}")).await;
     {
         let mut reg = engine.registry.lock().unwrap();

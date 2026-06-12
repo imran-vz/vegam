@@ -14,6 +14,7 @@ pub mod recv;
 pub mod resume_area;
 pub mod send;
 pub mod settings;
+pub mod telemetry;
 pub mod ticket;
 pub mod types;
 
@@ -424,6 +425,27 @@ impl Engine {
     pub fn emit(&self, event: EngineEvent) {
         // No receivers is fine (e.g. during tests).
         let _ = self.events.send(event);
+    }
+
+    /// Anonymous telemetry id, generated lazily and persisted in settings.
+    pub fn analytics_id(&self) -> String {
+        let (id, save) = {
+            let mut guard = self.settings.lock().unwrap();
+            match &guard.analytics_id {
+                Some(id) => (id.clone(), None),
+                None => {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    guard.analytics_id = Some(id.clone());
+                    (id, Some(guard.clone()))
+                }
+            }
+        };
+        if let Some(snapshot) = save {
+            if let Err(e) = settings::save(&self.paths.settings(), &snapshot) {
+                tracing::warn!("persisting analytics id failed: {e}");
+            }
+        }
+        id
     }
 
     /// Emit the current state of a send transfer.

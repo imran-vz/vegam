@@ -122,6 +122,8 @@ export interface ResumeAreaReport {
 
 export interface Settings {
 	display_name: string;
+	/** PostHog product telemetry; OFF by default. */
+	analytics_enabled: boolean;
 }
 
 export interface AppSnapshot {
@@ -228,6 +230,19 @@ export async function getSettings(): Promise<Settings> {
 
 export async function setDisplayName(displayName: string): Promise<Settings> {
 	return await invoke<Settings>("set_display_name", { displayName });
+}
+
+export async function setAnalyticsEnabled(
+	enabled: boolean,
+): Promise<Settings> {
+	return await invoke<Settings>("set_analytics_enabled", { enabled });
+}
+
+/** User-initiated: copies the local log file to a path the user chose. */
+export async function exportDiagnostics(
+	destinationPath: string,
+): Promise<void> {
+	await invoke<void>("export_diagnostics", { destinationPath });
 }
 
 // Events

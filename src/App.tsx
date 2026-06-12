@@ -1,9 +1,70 @@
+import { Check, Pencil } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PartialDownloads } from "@/components/PartialDownloads";
+import { PrivacySettings } from "@/components/PrivacySettings";
 import { ReceiveFile } from "@/components/ReceiveFile";
 import { SendFile } from "@/components/SendFile";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { type AppSnapshot, initApp } from "@/lib/api";
+import { type AppSnapshot, initApp, setDisplayName } from "@/lib/api";
+
+/** Cosmetic Device name (ADR 0017): editable, never identity or trust. */
+function DisplayNameEditor({ initialName }: { initialName: string }) {
+	const [name, setName] = useState(initialName);
+	const [draft, setDraft] = useState(initialName);
+	const [editing, setEditing] = useState(false);
+
+	const commit = async () => {
+		const trimmed = draft.trim();
+		if (trimmed && trimmed !== name) {
+			try {
+				const settings = await setDisplayName(trimmed);
+				setName(settings.display_name);
+				setDraft(settings.display_name);
+			} catch (error) {
+				console.error("Failed to save display name:", error);
+				setDraft(name);
+			}
+		} else {
+			setDraft(name);
+		}
+		setEditing(false);
+	};
+
+	if (!editing) {
+		return (
+			<button
+				type="button"
+				className="inline-flex items-center gap-1 text-xs md:text-sm text-muted-foreground hover:text-foreground"
+				onClick={() => setEditing(true)}
+				title="Edit this device's display name"
+			>
+				{name}
+				<Pencil className="size-3" />
+			</button>
+		);
+	}
+	return (
+		<span className="inline-flex items-center gap-1">
+			<input
+				value={draft}
+				onChange={(e) => setDraft(e.target.value)}
+				onKeyDown={(e) => {
+					if (e.key === "Enter") commit();
+					if (e.key === "Escape") {
+						setDraft(name);
+						setEditing(false);
+					}
+				}}
+				className="text-xs md:text-sm border rounded px-2 py-0.5 bg-background"
+				maxLength={64}
+			/>
+			<Button size="icon" variant="ghost" className="size-6" onClick={commit}>
+				<Check className="size-3" />
+			</Button>
+		</span>
+	);
+}
 
 function App() {
 	const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
@@ -54,9 +115,7 @@ function App() {
 					<div className="flex items-center justify-center gap-3">
 						<h1 className="text-2xl md:text-3xl font-bold">Vegam</h1>
 					</div>
-					<p className="text-xs md:text-sm text-muted-foreground">
-						{snapshot.settings.display_name}
-					</p>
+					<DisplayNameEditor initialName={snapshot.settings.display_name} />
 				</div>
 
 				<Tabs defaultValue="send" className="w-full">
@@ -71,8 +130,9 @@ function App() {
 					<TabsContent value="receive" className="mt-4 md:mt-6">
 						<ReceiveFile initialTransfers={snapshot.receive_transfers} />
 					</TabsContent>
-					<TabsContent value="storage" className="mt-4 md:mt-6">
+					<TabsContent value="storage" className="mt-4 md:mt-6 space-y-4">
 						<PartialDownloads />
+						<PrivacySettings initialSettings={snapshot.settings} />
 					</TabsContent>
 				</Tabs>
 			</div>

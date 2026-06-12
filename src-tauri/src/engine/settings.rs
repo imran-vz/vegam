@@ -17,6 +17,10 @@ use crate::engine::types::Settings;
 struct SettingsFile {
     schema_version: u32,
     display_name: String,
+    #[serde(default)]
+    analytics_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    analytics_id: Option<String>,
 }
 
 const SCHEMA_VERSION: u32 = 1;
@@ -49,10 +53,14 @@ pub fn load_or_create(path: &Path) -> Result<Settings> {
         let file: SettingsFile = serde_json::from_str(&raw).context("parsing settings")?;
         Ok(Settings {
             display_name: file.display_name,
+            analytics_enabled: file.analytics_enabled,
+            analytics_id: file.analytics_id,
         })
     } else {
         let settings = Settings {
             display_name: generate_display_name(&mut rand::rng()),
+            analytics_enabled: false,
+            analytics_id: None,
         };
         save(path, &settings)?;
         Ok(settings)
@@ -63,6 +71,8 @@ pub fn save(path: &Path, settings: &Settings) -> Result<()> {
     let file = SettingsFile {
         schema_version: SCHEMA_VERSION,
         display_name: settings.display_name.clone(),
+        analytics_enabled: settings.analytics_enabled,
+        analytics_id: settings.analytics_id.clone(),
     };
     let json = serde_json::to_string_pretty(&file)?;
     write_atomic(path, json.as_bytes())
@@ -95,6 +105,8 @@ mod tests {
 
         let edited = Settings {
             display_name: "my laptop".to_string(),
+            analytics_enabled: false,
+            analytics_id: None,
         };
         save(&path, &edited).unwrap();
         let loaded = load_or_create(&path).unwrap();

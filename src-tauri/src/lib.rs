@@ -71,6 +71,7 @@ async fn init_app(
     });
 
     let snapshot = engine.snapshot();
+    engine::telemetry::capture(&engine, engine::telemetry::Event::AppStarted, None);
     state.set_engine(engine).await;
     Ok(snapshot)
 }
@@ -194,6 +195,53 @@ async fn get_settings(state: State<'_, AppState>) -> Result<Settings, ApiError> 
 }
 
 #[tauri::command]
+async fn set_analytics_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<Settings, ApiError> {
+    let engine = get_engine(&state).await?;
+    let settings = {
+        let mut guard = engine.settings.lock().unwrap();
+        guard.analytics_enabled = enabled;
+        guard.clone()
+    };
+    engine::settings::save(&engine.paths.settings(), &settings)
+        .map_err(|e| ApiError::io(format!("saving settings failed: {e}")))?;
+    Ok(settings)
+}
+
+/// User-initiated diagnostics export (ADR 0014): copies the local log file
+/// to a destination the user chose. Nothing is exported automatically.
+#[tauri::command]
+async fn export_diagnostics(
+    app: tauri::AppHandle,
+    destination_path: String,
+) -> Result<(), ApiError> {
+    let log_dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| ApiError::internal(format!("no log dir: {e}")))?;
+    // Newest .log file in the app log dir.
+    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    let entries =
+        std::fs::read_dir(&log_dir).map_err(|e| ApiError::io(format!("reading logs: {e}")))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map(|e| e == "log").unwrap_or(false) {
+            if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                if newest.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
+                    newest = Some((modified, path));
+                }
+            }
+        }
+    }
+    let (_, source) = newest.ok_or_else(|| ApiError::not_found("no log file found to export"))?;
+    std::fs::copy(&source, std::path::Path::new(&destination_path))
+        .map_err(|e| ApiError::io(format!("copying log file: {e}")))?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn set_display_name(
     state: State<'_, AppState>,
     display_name: String,
@@ -227,10 +275,11 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
-                .filter(|metadata| {
-                    metadata.target().starts_with("vegam_lib")
-                        || metadata.level() <= log::Level::Error
-                })
+                // Privacy default (ADR 0014): persist ONLY Vegam's own log
+                // targets. Third-party crates (including iroh internals) can
+                // carry peer addresses in error messages, which must not
+                // land in local logs by default.
+                .filter(|metadata| metadata.target().starts_with("vegam_lib"))
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::LogDir { file_name: None }),
@@ -257,6 +306,8 @@ pub fn run() {
             cleanup_partial_download,
             get_settings,
             set_display_name,
+            set_analytics_enabled,
+            export_diagnostics,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

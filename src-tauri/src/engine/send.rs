@@ -113,6 +113,11 @@ pub async fn create_send_transfer(
     };
     engine.persist()?;
     engine.emit_send(&id);
+    crate::engine::telemetry::capture(
+        engine,
+        crate::engine::telemetry::Event::SendTransferCreated,
+        Some(source_len),
+    );
 
     let task_engine = engine.clone();
     let task_id = id.clone();

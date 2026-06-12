@@ -146,6 +146,14 @@ pub struct ResumeAreaReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub display_name: String,
+    /// PostHog product telemetry. OFF by default (ADR 0014); nothing is
+    /// sent unless the user enables it AND a build-time API key exists.
+    #[serde(default)]
+    pub analytics_enabled: bool,
+    /// Anonymous random id for telemetry; generated on first use. Never the
+    /// endpoint id (that is a peer identity, which telemetry must not see).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analytics_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
