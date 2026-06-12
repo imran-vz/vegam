@@ -1,0 +1,3 @@
+# Use Local Diagnostics With Flagged PostHog
+
+Production v1 keeps local logs that users can share on demand for support and debugging. Local logs must also avoid file names, file paths, Transfer Tickets, peer IDs, IP addresses, exact file sizes, and content hashes by default; they may include short-lived internal transfer IDs and coarse file-size buckets. PostHog telemetry may exist behind a user-visible runtime setting, but it must be disabled by default so normal v1 usage does not silently send analytics from a P2P file transfer app. When enabled, PostHog may send only product-level events and coarse technical diagnostics; it must not send file names, file paths, Transfer Tickets, peer IDs, IP addresses, exact file sizes, or content hashes.
