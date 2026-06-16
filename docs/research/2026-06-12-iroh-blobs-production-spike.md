@@ -110,9 +110,11 @@ import/hashing phase as well as serving):
 
 ## Gotchas / risks carried into Phase 3
 
-1. **Ecosystem pin**: `time >= 0.3.48` breaks `rcgen 0.14.8` (transitive via
-   iroh); pin `time = 0.3.47` until upstream fixes land. Recorded in the
-   spike README.
+1. **Ecosystem pin**: originally, `time >= 0.3.48` broke `rcgen 0.14.8`
+   (transitive via the rc-era iroh stack), so the spike pinned
+   `time = 0.3.47`. Superseded on 2026-06-16: `iroh = 1.0.0`,
+   `iroh-blobs = 0.103.0`, and `irpc = 0.17.0` compile with `time = 0.3.49`,
+   so the production app and spike no longer carry this pin.
 2. **`iroh-blobs` production warning**: upstream still labels 0.10x
    pre-production. The spike found no blocking defect across kill/stall/
    corruption scenarios; residual risk is API churn before iroh 1.0 final.

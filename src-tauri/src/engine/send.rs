@@ -3,10 +3,12 @@
 //! moved-file reselect (ADRs 0003/0004/0005/0015/0018/0019).
 
 use std::collections::BTreeSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use iroh::{EndpointAddr, TransportAddr};
 use iroh_blobs::api::blobs::{AddPathOptions, AddProgressItem, ImportMode};
 use iroh_blobs::ticket::BlobTicket;
 use iroh_blobs::{BlobFormat, Hash};
@@ -19,6 +21,35 @@ use crate::engine::persist::SendRecord;
 use crate::engine::ticket::VegamTicket;
 use crate::engine::types::{now_unix_secs, SendStatus, SendTransferInfo};
 use crate::engine::{Engine, SendTransfer};
+
+fn ticket_addr(engine: &Engine) -> EndpointAddr {
+    let addr = engine.endpoint.addr();
+    if !addr.addrs.is_empty() || !matches!(engine.tuning.relay_mode, iroh::RelayMode::Disabled) {
+        return addr;
+    }
+
+    EndpointAddr::from_parts(
+        engine.endpoint.id(),
+        engine
+            .endpoint
+            .bound_sockets()
+            .into_iter()
+            .map(loopback_if_unspecified)
+            .map(TransportAddr::Ip),
+    )
+}
+
+fn loopback_if_unspecified(addr: SocketAddr) -> SocketAddr {
+    match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => {
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), addr.port())
+        }
+        IpAddr::V6(ip) if ip.is_unspecified() => {
+            SocketAddr::new(Ipv6Addr::LOCALHOST.into(), addr.port())
+        }
+        _ => addr,
+    }
+}
 
 /// Stat snapshot used as the content-drift heuristic baseline. A mismatch
 /// only makes the transfer ContentSuspect; the authoritative check is a
@@ -272,7 +303,7 @@ async fn run_import(engine: &Arc<Engine>, id: &str, path: PathBuf) -> anyhow::Re
     // A ticket minted before the endpoint knows any of its addresses is
     // unconnectable; wait until at least one (relay or direct) shows up.
     let addr_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while engine.endpoint.addr().addrs.is_empty() {
+    while ticket_addr(engine).addrs.is_empty() {
         if tokio::time::Instant::now() >= addr_deadline {
             tracing::warn!("endpoint has no addresses; ticket may be unconnectable");
             break;
@@ -289,7 +320,7 @@ async fn run_import(engine: &Arc<Engine>, id: &str, path: PathBuf) -> anyhow::Re
         (t.record.file_name.clone(), now_unix_secs())
     };
     let ticket = VegamTicket {
-        blob: BlobTicket::new(engine.endpoint.addr(), hash, BlobFormat::Raw),
+        blob: BlobTicket::new(ticket_addr(engine), hash, BlobFormat::Raw),
         file_name,
         size,
         issued_at,

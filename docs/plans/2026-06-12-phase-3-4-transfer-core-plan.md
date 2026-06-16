@@ -3,14 +3,15 @@
 Date: 2026-06-12. Derived from the Phase 2 spike
 (`docs/research/2026-06-12-iroh-blobs-production-spike.md`,
 `spikes/iroh-blobs/`) and ADRs 0003–0022. Verified against the vendored
-`iroh-blobs 0.102.0` sources.
+`iroh-blobs 0.102.0` sources, then dependency-checked against
+`iroh-blobs 0.103.0` on 2026-06-16.
 
 ## Verified API facts the plan relies on
 
 - `BlobsProtocol::new(store: &Store, events: Option<EventSender>)`;
   `EventSender::channel(capacity, mask) -> (EventSender, mpsc::Receiver<ProviderMessage>)`.
 - `EventMask { connected, get, get_many, push, observe, throttle }`.
-  **Critical (corrected by review):** in 0.102.0 the `get_many`/`push`/
+  **Critical (corrected by review):** in 0.103.0 the `get_many`/`push`/
   `observe` mask fields are dead code — `EventSender::request()` dispatches
   ALL four request types on `mask.get` (events.rs:462 via provider.rs
   151-178). So `get_many: Disabled` provides no protection by itself; with
@@ -39,7 +40,7 @@ Date: 2026-06-12. Derived from the Phase 2 spike
   private. Blob deletion goes through tag removal + sweep.
 - `iroh_tickets::Ticket` trait (KIND prefix + postcard + base32 lowercase) is
   how `BlobTicket` gets its `blob...` string; implement the same trait for
-  the Vegam ticket. iroh-blobs pins `iroh-tickets = "=1.0.0-rc.1"`.
+  the Vegam ticket. iroh-blobs 0.103 uses `iroh-tickets = "1.0.0"`.
 
 ## Resolved design decisions
 
@@ -91,7 +92,7 @@ keep their resumable state and retry.**
 
 Receiver identity = `EndpointId` from `ClientConnected` (receivers persist
 their secret key, so it survives restarts; `None` ⇒ treated as new, rejected
-post-expiry; in 0.102.0 it is in practice always `Some`).
+post-expiry; in 0.103.0 it is in practice always `Some`).
 
 Content-change detection (corrected by review — ADR 0005 defines sameness by
 Content Identity, NOT mtime): a `stat()` len/mtime mismatch only flips the
@@ -187,11 +188,10 @@ editable via `set_display_name`, never on the wire in Phase 3/4.
 ## Cargo.toml rework
 Remove: iroh-gossip, iroh-base, redb, quic-rpc, iroh-io, bytes, hostname,
 aes-gcm, sha2, base64, data-encoding, tracing-subscriber.
-Add/change: `iroh = "=1.0.0-rc.1"`, `iroh-blobs = "0.102"`,
-`iroh-tickets = "=1.0.0-rc.1"`, `postcard = { version = "1", features =
-["use-std"] }`, `hex = "0.4"`, `n0-future = "0.3"`, `rand = "0.9"` (names
-only), `time = "=0.3.47"` (rcgen 0.14.8 breakage; comment links spike
-README). Keep: serde, serde_json, tokio(full), tracing, anyhow, uuid, log,
+Add/change: `iroh = "=1.0.0"`, `iroh-blobs = "0.103"`,
+`iroh-tickets = "=1.0.0"`, `irpc = "0.17"`, `postcard = { version = "1",
+features = ["use-std"] }`, `hex = "0.4"`, `n0-future = "0.3"`, `rand =
+"0.9"` (names only). Keep: serde, serde_json, tokio(full), tracing, anyhow, uuid, log,
 tauri + dialog/log/fs/opener/clipboard-manager plugins.
 
 ## Command surface (Rust) and TS contract

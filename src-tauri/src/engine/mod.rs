@@ -264,7 +264,7 @@ impl Engine {
 
         // The gate intercepts connects and get requests so the engine can
         // enforce ticket expiry, pause, and cancellation (ADR 0015/0018/0019).
-        // Note: in iroh-blobs 0.102 every request type dispatches on
+        // Note: in iroh-blobs 0.103 every request type dispatches on
         // `mask.get`; the Disabled values on get_many/push are forward-compat
         // hardening, and the gate loop still explicitly rejects those
         // variants.

@@ -234,7 +234,7 @@ async fn handle_message(engine: &Arc<Engine>, msg: ProviderMessage) {
                 }
             }
         }
-        // In iroh-blobs 0.102 every request type dispatches on `mask.get`,
+        // In iroh-blobs 0.103 every request type dispatches on `mask.get`,
         // so these variants can arrive despite get_many/push being Disabled
         // in the mask. Reject them all explicitly: Vegam serves single-blob
         // Get requests only.

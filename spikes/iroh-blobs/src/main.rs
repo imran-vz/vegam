@@ -1,6 +1,6 @@
 //! Phase 2 production spike for the Vegam Desktop Release (ADR 0021).
 //!
-//! Proves whether `iroh = 1.0.0-rc.1` + `iroh-blobs = 0.102` can carry the v1
+//! Proves whether `iroh = 1.0.0` + `iroh-blobs = 0.103` can carry the v1
 //! transfer bar: 100 GB single-file Transfers, bounded memory, Content
 //! Identity verification, resume after network loss and app restart, manual
 //! pause/resume, Partial Downloads in a managed resume area, safe failure on

@@ -1,7 +1,7 @@
 # Iroh Blobs Production Spike
 
 Phase 2 of `docs/roadmap/desktop-v1.md` (decision recorded in ADR `0021`).
-Proves whether `iroh = 1.0.0-rc.1` + `iroh-blobs = 0.102` meet the Vegam
+Proves whether `iroh = 1.0.0` + `iroh-blobs = 0.103` meet the Vegam
 desktop v1 transfer bar before the production implementation commits to them.
 
 This crate is intentionally **not** part of the production app. It is a CLI
@@ -39,10 +39,8 @@ Scenarios use `/tmp/vegam-spike` (override with `SPIKE_WORK`). Each prints
 Results and the production-readiness verdict live in
 `docs/research/2026-06-12-iroh-blobs-production-spike.md`.
 
-## Note on the `time` crate pin
+## Dependency line
 
-`Cargo.lock` pins `time = 0.3.47`: `time >= 0.3.48` breaks the build of
-`rcgen 0.14.8` (transitive via iroh) with a trait-coherence error, while
-`vergen-gitcl 9.1` (transitive via iroh-relay) needs `time >= 0.3.45`. If the
-build breaks after a `cargo update`, re-pin with
-`cargo update time --precise 0.3.47`.
+The spike now follows the production app's Iroh 1.0 final line. The old
+`time = 0.3.47` resolver pin from the rc-era stack is no longer needed with
+`iroh = 1.0.0` and `iroh-blobs = 0.103`.
